@@ -1,10 +1,16 @@
-"""Интерфейс «Архивариуса» на tkinter/ttk. Вся логика — в core.py."""
+"""Интерфейс «Архивариуса». Вся логика работы с файлами — в core.py.
+
+Вёрстка повторяет присланные макеты: белый фон без карточек и шапки,
+скруглённые элементы, маскот на главном экране, в настройках и на результате.
+Шрифт — Poppins, радиусы: 16 у больших кнопок, 8 у маленьких.
+Окно фиксированного размера 900×620.
+"""
+
 from __future__ import annotations
 
 import logging
 import os
 import queue
-import re
 import subprocess
 import sys
 import threading
@@ -13,8 +19,10 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 import core
+import fonts
 import settings as cfgmod
 import version
+import widgets as ui_kit
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
@@ -28,50 +36,93 @@ except Exception:  # noqa: BLE001 - приложение обязано рабо
 APP_TITLE = "Архивариус"
 LOG = logging.getLogger(cfgmod.APP_NAME)
 
-BG = "#FAF7F2"
+# --- палитра из макета -------------------------------------------------------
+GREEN = "#2F7D32"
+GREEN_DARK = "#26632A"
+GREEN_SOFT = "#EBF2EB"
+GOLD = "#FFDAAC"
+INK = "#1F2A20"
+MUTED = "#6B7B6E"
+DANGER = "#B3261E"
+BG = "#FFFFFF"
 CARD = "#FFFFFF"
-INK = "#2B2B2B"
-MUTED = "#7A7266"
-ACCENT = "#C9A227"
-ACCENT_DARK = "#A8861A"
-BLUE = "#1F3A5F"
-GOLD_SOFT = "#F3E9C8"
+LINE = "#D7E4D7"
+
+# Совместимость со старыми именами.
+ACCENT = GREEN
+ACCENT_DARK = GREEN_DARK
+BLUE = GREEN
+GOLD_SOFT = GOLD
 
 STRINGS = {
     "tagline": "Раскладывает файлы по годам",
     "drop": "Перетащите сюда папку",
     "or": "или",
-    "choose": "Выбрать папку",
+    "choose": "Выберите папку",
     "recent": "Недавние папки",
-    "advanced": "Дополнительно",
-    "template": "Шаблон имени",
-    "year_folder": "Папка года",
-    "mode": "Режим",
+    "template": "Шаблон названия файла",
+    "year_folder": "Шаблон названия папки",
+    "mode": "Режим работы",
     "mode_inplace": "Переименовать и разложить",
     "mode_dry": "Только отчёт, ничего не менять",
     "recursive": "Включая вложенные папки",
     "filename_date": "Брать дату из имени файла, если других нет",
-    "preview_title": "Предпросмотр",
+    "skip_system": "Пропускать системные и скрытые файлы",
+    "preview_title": "Просмотр",
     "col_old": "Имя сейчас",
     "col_new": "Имя после",
     "col_folder": "Папка года",
     "col_source": "Источник даты",
     "col_status": "Статус",
-    "btn_go": "Разложить",
+    "btn_go": "Навести порядок!",
     "btn_back": "Назад",
     "btn_cancel": "Отмена",
+    "btn_save": "Сохранить",
+    "btn_reset": "Сбросить настройки",
     "working": "Работаю…",
-    "result_title": "Готово",
-    "thanks": "Спасибо",
+    "thanks": "Вернуться к работе",
+    "open_folder": "Открыть папку",
     "undo": "Отменить изменения",
-    "open_journal": "Открыть журнал",
-    "again": "Разложить другую папку",
     "retry": "Повторить пропущенные",
     "nothing": "Здесь пока нечего раскладывать",
-    "nothing_hint": "В выбранной папке нет файлов, которые нужно переименовать.",
 }
 
 MODES = [("inplace", STRINGS["mode_inplace"]), ("dry", STRINGS["mode_dry"])]
+
+# Колонки таблицы просмотра. Сумма 838 = ширина рабочей области.
+COLUMNS = (
+    ("old", 210),
+    ("new", 220),
+    ("folder", 88),
+    ("source", 175),
+    ("status", 145),
+)
+
+EXPLANATIONS = {
+    core.SRC_EXIF_ORIGINAL: "дата съёмки из EXIF внутри файла. Её ставит камера или телефон, "
+    "она переживает копирование и не зависит от свойств Windows.",
+    core.SRC_EXIF_DATETIME: "дата изменения из EXIF внутри файла. Съёмки в тегах нет, но есть "
+    "время правки снимка.",
+    core.SRC_META_CREATED: "дата создания из метаданных документа. Хранится внутри файла, "
+    "копирование её не меняет.",
+    core.SRC_META_MODIFIED: "дата изменения из метаданных документа. Более поздней даты "
+    "в файле нет.",
+    core.SRC_TEMPLATE_NAME: "дата уже есть в имени файла — оно собрано по шаблону.",
+    core.SRC_FILENAME: "дата распознана в исходном имени файла.",
+    core.SRC_MTIME: "времени создания содержимого в файле нет, поэтому взято время изменения "
+    "файла. Оно сохраняется при копировании.",
+    core.SRC_CTIME: "никаких дат внутри файла нет, взято время создания файла в Windows. "
+    "У скачанных и скопированных файлов это дата скачивания, а не съёмки.",
+    core.SRC_NONE: "дат не найдено, файл оставлен без изменений.",
+}
+
+WINDOW_W, WINDOW_H = 900, 620
+MARGIN = 24  # поля по краям экрана
+HOME_GAP = 22  # одинаковый промежуток между блоками главного экрана
+HOME_TEXT_SIZE = 10  # кегль пояснения и подписи «Недавние папки»
+SETTINGS_TITLE_GAP = 24  # расстояние от заголовка до поля ввода в настройках
+CONTENT_X = 31
+CONTENT_W = 838  # рабочая ширина
 
 
 def reduce_motion() -> bool:
@@ -81,7 +132,9 @@ def reduce_motion() -> bool:
         import ctypes
 
         enabled = ctypes.c_int(0)
-        ok = ctypes.windll.user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(enabled), 0)
+        ok = ctypes.windll.user32.SystemParametersInfoW(
+            0x1042, 0, ctypes.byref(enabled), 0
+        )
         return bool(ok) and not enabled.value
     except Exception:  # noqa: BLE001
         return False
@@ -96,82 +149,12 @@ def plural(number: int, one: str, few: str, many: str) -> str:
 
 
 def fmt_duration(seconds: float) -> str:
+    if seconds < 1:
+        return "меньше секунды"
     if seconds < 60:
-        return f"{seconds:.1f} с"
+        return f"{seconds:.0f} {plural(int(seconds), 'секунда', 'секунды', 'секунд')}"
     minutes = int(seconds // 60)
-    return f"{minutes} мин {int(seconds % 60)} с"
-
-
-# --- маскот ------------------------------------------------------------------
-
-
-class Mascot(tk.Frame):
-    """Картинка маскота или аккуратный векторный плейсхолдер, если ассетов нет."""
-
-    def __init__(self, master, width: int = 260, height: int = 260, **kwargs):
-        super().__init__(master, bg=kwargs.pop("bg", BG), width=width, height=height)
-        self.pack_propagate(False)
-        self.width = width
-        self.height = height
-        self._image: tk.PhotoImage | None = None
-        self.canvas = tk.Canvas(self, width=width, height=height, bg=BG, highlightthickness=0)
-        self.canvas.pack(fill="both", expand=True)
-        self._frames_anchor: tk.Label | None = None
-        self._draw_placeholder()
-
-    def _draw_placeholder(self) -> None:
-        c = self.canvas
-        c.delete("all")
-        w, h = self.width, self.height
-        cx, cy = w // 2, h // 2
-        r = int(min(w, h) * 0.30)
-
-        c.create_oval(cx - r - 26, cy + r - 8, cx + r + 26, cy + r + 74, fill=BLUE, outline="")
-        c.create_polygon(
-            cx - r + 4, cy + r - 4, cx + r - 4, cy + r - 4, cx + r + 30, cy + r + 78,
-            cx - r - 30, cy + r + 78, fill=BLUE, outline="", smooth=True,
-        )
-        c.create_line(cx, cy + r + 10, cx, cy + r + 66, fill=GOLD_SOFT, width=3)
-        c.create_oval(cx - 20, cy + r + 4, cx + 20, cy + r + 34, fill=GOLD_SOFT, outline="")
-
-        c.create_oval(cx - r, cy - r, cx + r, cy + r, fill="#F2D6C0", outline="#D9B79C", width=2)
-        c.create_arc(
-            cx - r, cy - r - 6, cx + r, cy + int(r * 0.35),
-            start=0, extent=180, fill="#EDEDED", outline="#D6D6D6", width=2,
-        )
-        c.create_oval(cx - r + 12, cy - r + 6, cx - r + 40, cy - r + 34, fill="#EDEDED", outline="")
-        c.create_oval(cx + r - 40, cy - r + 6, cx + r - 12, cy - r + 34, fill="#EDEDED", outline="")
-
-        gr = int(r * 0.40)
-        gy = cy - int(r * 0.12)
-        for dx in (-int(r * 0.46), int(r * 0.46)):
-            c.create_oval(cx + dx - gr, gy - gr, cx + dx + gr, gy + gr, outline=INK, width=3, fill="#FFFFFF")
-            c.create_oval(cx + dx - 4, gy - 4, cx + dx + 4, gy + 4, fill=INK, outline="")
-        c.create_line(cx - 8, gy, cx + 8, gy, fill=INK, width=3)
-
-        c.create_polygon(
-            cx - int(r * 0.7), cy + int(r * 0.30), cx + int(r * 0.7), cy + int(r * 0.30),
-            cx, cy + int(r * 1.05), fill="#F7F7F7", outline="#DCDCDC", smooth=True,
-        )
-        c.create_arc(
-            cx - int(r * 0.32), cy + int(r * 0.18), cx + int(r * 0.32), cy + int(r * 0.56),
-            start=200, extent=140, style="arc", outline="#B08A6E", width=3,
-        )
-
-        for index, offset in enumerate((0, 14, 28)):
-            c.create_rectangle(
-                cx - 96 + offset, cy + int(r * 1.0) + offset,
-                cx - 20 + offset, cy + int(r * 1.0) + 22 + offset,
-                fill="#E8D4A8" if index % 2 else "#DCC48E", outline="#B99C63",
-            )
-
-    def show_image(self, photo: tk.PhotoImage | None) -> None:
-        if photo is None:
-            self._draw_placeholder()
-            return
-        self.canvas.delete("all")
-        self._image = photo
-        self.canvas.create_image(self.width // 2, self.height // 2, image=photo)
+    return f"{minutes} {plural(minutes, 'минута', 'минуты', 'минут')}"
 
 
 def load_photo(path: Path, box: tuple[int, int]) -> tk.PhotoImage | None:
@@ -189,12 +172,7 @@ def load_photo(path: Path, box: tuple[int, int]) -> tk.PhotoImage | None:
         return None
 
 
-# --- приложение --------------------------------------------------------------
-
 BaseClass = TkinterDnD.Tk if DND_AVAILABLE else tk.Tk
-
-
-STRINGS_SAVE_LABEL = "Сохранить"
 
 
 class App(BaseClass):
@@ -202,10 +180,11 @@ class App(BaseClass):
         super().__init__()
         self.cfg = cfgmod.load_settings()
         self.title(f"{APP_TITLE} {version.APP_VERSION}")
-        self.geometry(self.cfg.get("geometry") or "900x620")
-        self.minsize(720, 520)
+        self.geometry(f"{WINDOW_W}x{WINDOW_H}")
+        self.resizable(False, False)
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._set_window_icon()
 
         self.folder: Path | None = None
         self.plan_result: core.PlanResult | None = None
@@ -217,11 +196,10 @@ class App(BaseClass):
         self._anim_frames: list[tk.PhotoImage] = []
         self._anim_after: str | None = None
         self._thanks_after: str | None = None
+        # Откуда открыли настройки: чтобы вернуться туда же, а не на главный.
+        self._settings_origin = "home"
 
         self._build_styles()
-        self._build_header()
-        self.container = tk.Frame(self, bg=BG)
-        self.container.pack(fill="both", expand=True, padx=28, pady=(0, 22))
 
         self.screens: dict[str, tk.Frame] = {}
         self._build_home()
@@ -248,162 +226,254 @@ class App(BaseClass):
         if initial:
             self.after(120, lambda: self._start_scan(Path(initial).expanduser()))
 
-    # --- общее ---------------------------------------------------------------
+    # --- окно и иконка -------------------------------------------------------
+
+    def _set_window_icon(self) -> None:
+        icon = cfgmod.assets_dir() / "icon.ico"
+        if not icon.is_file():
+            return
+        for setter in (
+            lambda: self.iconbitmap(default=str(icon)),
+            lambda: self.iconbitmap(str(icon)),
+        ):
+            try:
+                setter()
+                return
+            except tk.TclError:
+                continue
+        try:
+            from PIL import Image, ImageTk
+
+            image = Image.open(icon)
+            sizes = sorted(image.ico.sizes()) if hasattr(image, "ico") else [(64, 64)]
+            photos = []
+            for size in sizes:
+                image.size = size
+                photos.append(ImageTk.PhotoImage(image.convert("RGBA")))
+            if photos:
+                self._icon_photos = photos
+                self.iconphoto(True, *photos)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _build_styles(self) -> None:
         style = ttk.Style(self)
         try:
-            import sv_ttk
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
 
-            sv_ttk.set_theme("light")
-            style = ttk.Style(self)
-        except Exception:  # noqa: BLE001 - без sv-ttk приложение работает на clam
-            try:
-                style.theme_use("clam")
-            except tk.TclError:
-                pass
-        style.configure("TFrame", background=BG)
-        style.configure("Card.TFrame", background=CARD, relief="flat")
-        style.configure("TLabel", background=BG, foreground=INK, font=("Segoe UI", 10))
-        style.configure("Card.TLabel", background=CARD, foreground=INK, font=("Segoe UI", 10))
-        style.configure("Muted.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 9))
-        style.configure("Title.TLabel", background=BG, foreground=BLUE, font=("Segoe UI Semibold", 20))
-        style.configure("Head.TLabel", background=BG, foreground=BLUE, font=("Segoe UI Semibold", 14))
-        style.configure("Drop.TLabel", background=CARD, foreground=MUTED, font=("Segoe UI", 12))
-        style.configure("Big.TButton", font=("Segoe UI Semibold", 12), padding=(22, 12))
-        style.configure("Accent.TButton", font=("Segoe UI Semibold", 13), padding=(34, 14))
-        style.configure("Link.TButton", font=("Segoe UI", 10), padding=(6, 4))
-        style.configure("Treeview", font=("Segoe UI", 10), rowheight=26, background=CARD, fieldbackground=CARD)
-        style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9))
-        style.configure("TCheckbutton", background=CARD, foreground=INK, font=("Segoe UI", 10))
-        style.configure("Card.TRadiobutton", background=CARD, foreground=INK, font=("Segoe UI", 10))
-        style.configure("TEntry", padding=4)
-        style.map("Accent.TButton", background=[("active", ACCENT_DARK), ("!disabled", ACCENT)])
+        row_font = ui_kit.font(10)
+        style.configure(
+            "Treeview",
+            font=row_font,
+            rowheight=32,
+            background=BG,
+            fieldbackground=BG,
+            borderwidth=0,
+            relief="flat",
+        )
+        style.map(
+            "Treeview",
+            background=[("selected", GREEN_SOFT)],
+            foreground=[("selected", GREEN)],
+        )
+        # Заголовки рисуем на Canvas, поэтому штатные отключаем.
+        style.configure("Treeview.Heading", font=ui_kit.font(10), borderwidth=0)
 
-    def _build_header(self) -> None:
-        header = tk.Frame(self, bg=BG)
-        header.pack(fill="x", padx=28, pady=(18, 10))
-        tk.Label(header, text=APP_TITLE, bg=BG, fg=BLUE, font=("Segoe UI Semibold", 22)).pack(side="left")
-        tk.Label(
-            header, text=STRINGS["tagline"], bg=BG, fg=MUTED, font=("Segoe UI", 10)
-        ).pack(side="left", padx=(12, 0), pady=(8, 0))
-        ttk.Button(header, text="Настройки", style="Link.TButton", command=lambda: self.show("settings")).pack(side="right")
+        style.configure(
+            "TCombobox",
+            padding=(12, 8),
+            fieldbackground=GREEN_SOFT,
+            background=GREEN_SOFT,
+            foreground=GREEN,
+            bordercolor=LINE,
+            arrowcolor=GREEN,
+            arrowsize=16,
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", GREEN_SOFT)],
+            foreground=[("readonly", GREEN)],
+            bordercolor=[("focus", GREEN)],
+        )
+        self.option_add("*TCombobox*Listbox.font", row_font)
+
+        style.configure(
+            "Green.Horizontal.TProgressbar",
+            background=GREEN,
+            troughcolor=GREEN_SOFT,
+            borderwidth=0,
+            thickness=10,
+        )
+
+    def _screen(self, name: str) -> tk.Frame:
+        frame = tk.Frame(self, bg=BG, width=WINDOW_W, height=WINDOW_H)
+        self.screens[name] = frame
+        return frame
 
     def show(self, name: str) -> None:
         self._stop_animation()
         for frame in self.screens.values():
-            frame.pack_forget()
-        self.screens[name].pack(fill="both", expand=True)
+            frame.place_forget()
+        self.screens[name].place(x=0, y=0, width=WINDOW_W, height=WINDOW_H)
         self.current = name
 
-    def _card(self, master) -> tk.Frame:
-        return tk.Frame(master, bg=CARD, highlightbackground="#E6DED2", highlightthickness=1)
+    def _label(
+        self,
+        master,
+        text: str,
+        size: int = 11,
+        color: str = INK,
+        weight: str = "normal",
+        **kwargs,
+    ) -> tk.Label:
+        return tk.Label(
+            master, text=text, bg=BG, fg=color, font=ui_kit.font(size, weight), **kwargs
+        )
+
+    def _open_settings(self) -> None:
+        """Запоминает текущий экран, чтобы «Назад» вернул именно туда."""
+        self._settings_origin = self.current if self.current != "settings" else "home"
+        self.show("settings")
+
+    def _settings_back(self) -> None:
+        target = self._settings_origin
+        if target == "preview" and self.plan_result is not None:
+            self.show("preview")
+        else:
+            self.show("home")
 
     # --- главный экран -------------------------------------------------------
 
     def _build_home(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["home"] = frame
+        """Маскот слева, справа одна колонка с равным вертикальным ритмом.
 
-        card = self._card(frame)
-        card.pack(fill="x", pady=(0, 14))
+        Все блоки правой колонки разделены одинаковым промежутком HOME_GAP:
+        кнопка настроек → пояснение → зона перетаскивания → недавние папки →
+        главная кнопка.
+        """
+        frame = self._screen("home")
 
-        self.drop_zone = tk.Frame(card, bg=CARD, height=130)
-        self.drop_zone.pack(fill="x", padx=18, pady=(14, 12))
-        self.drop_zone.pack_propagate(False)
-        self.drop_hint = tk.Label(
-            self.drop_zone, text=STRINGS["drop"], bg=CARD, fg=MUTED, font=("Segoe UI", 14)
+        photo = load_photo(cfgmod.assets_dir() / "mascot_idle.png", (390, 560))
+        if photo is not None:
+            holder = tk.Label(frame, image=photo, bg=BG, bd=0)
+            holder.image = photo
+            holder.place(x=MARGIN, y=40, width=390, height=560)
+
+        # Одна ширина для всех элементов правой колонки, выровнены по центру.
+        col_w = 440
+        col_x = 425
+        gap = HOME_GAP  # одинаковый промежуток между всеми блоками
+
+        # --- 1. Кнопка настроек ---
+        settings_h = 34
+        y = MARGIN
+        self._settings_button = ui_kit.RoundButton(
+            frame,
+            "Настройки",
+            command=self._open_settings,
+            kind="primary",
+            width=125,
+            height=settings_h,
+            icon="icon_settings",
+            font_size=10,
+            bg=BG,
         )
-        self.drop_hint.pack(expand=True)
-        tk.Label(
-            self.drop_zone, text=STRINGS["or"], bg=CARD, fg="#B9B0A2", font=("Segoe UI", 9)
-        ).pack()
-        ttk.Button(self.drop_zone, text=STRINGS["choose"], style="Big.TButton", command=self._choose_folder).pack(
-            pady=(8, 0)
-        )
-        self.drop_zone.bind("<Button-1>", lambda _e: self._choose_folder())
+        self._settings_button.place(x=744, y=y)
+        y += settings_h + gap
 
-        self.folder_label = tk.Label(
-            card, text="", bg=CARD, fg=BLUE, font=("Segoe UI", 9), anchor="w", justify="left", wraplength=780
+        # --- 2. Пояснение (кегль как у «или» в зоне) ---
+        hint = tk.Label(
+            frame,
+            text="Наведу порядок в указанной папке: распределю все файлы\n"
+            "по годам и дам им правильные имена на основе даты создания.",
+            bg=BG,
+            fg=MUTED,
+            font=ui_kit.font(HOME_TEXT_SIZE),
+            justify="left",
+            anchor="nw",
         )
-        self.folder_label.pack(fill="x", padx=20, pady=(0, 14))
+        hint.place(x=col_x, y=y, width=col_w)
+        hint.update_idletasks()
+        y += hint.winfo_reqheight() + gap
 
-        recent_card = self._card(frame)
-        recent_card.pack(fill="x", pady=(0, 14))
-        row = tk.Frame(recent_card, bg=CARD)
-        row.pack(fill="x", padx=18, pady=14)
-        tk.Label(row, text=STRINGS["recent"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        # --- 3. Зона перетаскивания ---
+        zone_h = 250
+        self.drop_zone = ui_kit.DropZone(
+            frame, col_w, zone_h, bg=BG, onclick=self._choose_folder
+        )
+        self.drop_zone.place(x=col_x, y=y)
+
+        # Три элемента внутри зоны с равными промежутками, группа по центру.
+        hint_font = ui_kit.font(15)
+        or_font = ui_kit.font(11)
+        btn_h = 54
+        inner_gap = 20
+        hint_h, or_h = 22, 18
+        group_h = hint_h + or_h + btn_h + inner_gap * 2
+        top = (zone_h - group_h) / 2
+
+        self.drop_zone.create_text(
+            col_w / 2,
+            top + hint_h / 2,
+            text=STRINGS["drop"],
+            fill=GREEN,
+            font=hint_font,
+        )
+        self.drop_zone.create_text(
+            col_w / 2,
+            top + hint_h + inner_gap + or_h / 2,
+            text=STRINGS["or"],
+            fill=MUTED,
+            font=or_font,
+        )
+
+        self.choose_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["choose"],
+            command=self._choose_folder,
+            kind="primary",
+            width=col_w - 80,
+            height=btn_h,
+            icon="icon_folder_big",
+            font_size=13,
+            bg=GREEN_SOFT,
+        )
+        self.choose_button.place(
+            x=col_x + 40, y=y + top + hint_h + or_h + inner_gap * 2
+        )
+        y += zone_h + gap
+
+        # --- 4. Недавние папки: подпись и селект как один блок ---
+        recent_label = self._label(
+            frame, STRINGS["recent"], HOME_TEXT_SIZE, MUTED, "normal", anchor="w"
+        )
+        recent_label.place(x=col_x, y=y, width=col_w)
+        recent_label.update_idletasks()
+        y += recent_label.winfo_reqheight() + 6
+
         self.recent_var = tk.StringVar()
-        self.recent_box = ttk.Combobox(row, textvariable=self.recent_var, state="readonly", width=62)
-        self.recent_box.pack(side="left", padx=12)
+        self.recent_box = ttk.Combobox(
+            frame, textvariable=self.recent_var, state="readonly", font=ui_kit.font(11)
+        )
+        self.recent_box.place(x=col_x, y=y, width=col_w, height=40)
         self.recent_box.bind("<<ComboboxSelected>>", self._on_recent)
         self._refresh_recent()
+        y += 40 + gap
 
-        adv_card = self._card(frame)
-        adv_card.pack(fill="x")
-        self.adv_open = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            adv_card, text=STRINGS["advanced"], variable=self.adv_open,
-            command=self._toggle_advanced, style="TCheckbutton",
-        ).pack(anchor="w", padx=18, pady=(12, 0))
-        self.adv_body = tk.Frame(adv_card, bg=CARD)
-        self._build_advanced(self.adv_body)
-
-        self.go_button = ttk.Button(frame, text=STRINGS["btn_go"], style="Accent.TButton", command=self._scan_from_home)
-        self.go_button.pack(anchor="e", pady=(12, 0))
-
-    def _build_advanced(self, body: tk.Frame) -> None:
-        grid = body
-        tk.Label(grid, text=STRINGS["template"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=0, column=0, sticky="w", padx=18, pady=(10, 2)
+        # --- 5. Главная кнопка ---
+        self.go_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_go"],
+            command=self._scan_from_home,
+            kind="primary",
+            width=col_w,
+            height=72,
+            font_size=16,
+            bg=BG,
         )
-        self.template_var = tk.StringVar(value=self.cfg.get("template", ""))
-        ttk.Entry(grid, textvariable=self.template_var, width=44).grid(row=1, column=0, sticky="w", padx=18)
-        self.template_error = tk.Label(grid, text="", bg=CARD, fg="#B3261E", font=("Segoe UI", 8))
-        self.template_error.grid(row=2, column=0, sticky="w", padx=18)
-        self.template_var.trace_add("write", lambda *_: self._validate_templates())
-
-        tk.Label(grid, text=STRINGS["year_folder"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=0, column=1, sticky="w", padx=12, pady=(10, 2)
-        )
-        self.year_var = tk.StringVar(value=self.cfg.get("year_folder", "{YYYY}"))
-        ttk.Entry(grid, textvariable=self.year_var, width=18).grid(row=1, column=1, sticky="w", padx=12)
-        self.year_error = tk.Label(grid, text="", bg=CARD, fg="#B3261E", font=("Segoe UI", 8))
-        self.year_error.grid(row=2, column=1, sticky="w", padx=12)
-        self.year_var.trace_add("write", lambda *_: self._validate_templates())
-
-        tk.Label(grid, text=STRINGS["mode"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=3, column=0, sticky="w", padx=18, pady=(12, 2)
-        )
-        self.mode_var = tk.StringVar(value=self.cfg.get("mode", "inplace"))
-        mode_row = tk.Frame(grid, bg=CARD)
-        mode_row.grid(row=4, column=0, columnspan=2, sticky="w", padx=18)
-        for value, label in MODES:
-            ttk.Radiobutton(
-                mode_row, text=label, value=value, variable=self.mode_var, style="Card.TRadiobutton"
-            ).pack(side="left", padx=(0, 16))
-
-        self.recursive_var = tk.BooleanVar(value=bool(self.cfg.get("recursive")))
-        ttk.Checkbutton(
-            grid, text=STRINGS["recursive"], variable=self.recursive_var, style="TCheckbutton"
-        ).grid(row=5, column=0, sticky="w", padx=18, pady=(10, 0))
-
-        self.fname_date_var = tk.BooleanVar(value=bool(self.cfg.get("filename_date_fallback")))
-        ttk.Checkbutton(
-            grid, text=STRINGS["filename_date"], variable=self.fname_date_var, style="TCheckbutton"
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=18, pady=(4, 14))
-
-    def _toggle_advanced(self) -> None:
-        if self.adv_open.get():
-            self.adv_body.pack(fill="x")
-        else:
-            self.adv_body.pack_forget()
-
-    def _validate_templates(self) -> None:
-        error = core.validate_template(self.template_var.get())
-        self.template_error.config(text=error or "")
-        year_error = core.validate_year_folder(self.year_var.get())
-        self.year_error.config(text=year_error or "")
+        self.go_button.place(x=col_x, y=y)
 
     def _refresh_recent(self) -> None:
         folders = [p for p in self.cfg.get("last_folders", []) if os.path.isdir(p)]
@@ -431,10 +501,14 @@ class App(BaseClass):
             if path.is_dir():
                 self._start_scan(path)
                 return
-        messagebox.showinfo(APP_TITLE, "Нужна папка, а не файл. Перетащите папку целиком.")
+        messagebox.showinfo(
+            APP_TITLE, "Нужна папка, а не файл. " "Перетащите папку целиком."
+        )
 
     def _remember(self, folder: Path) -> None:
-        folders = [str(folder)] + [p for p in self.cfg.get("last_folders", []) if str(p) != str(folder)]
+        folders = [str(folder)] + [
+            p for p in self.cfg.get("last_folders", []) if str(p) != str(folder)
+        ]
         self.cfg["last_folders"] = folders[:5]
         cfgmod.save_settings(self.cfg)
         self._refresh_recent()
@@ -442,16 +516,17 @@ class App(BaseClass):
     # --- сканирование --------------------------------------------------------
 
     def _scan_from_home(self) -> None:
-        self.cfg["template"] = self.template_var.get()
-        self.cfg["year_folder"] = self.year_var.get()
-        self.cfg["mode"] = self.mode_var.get()
-        self.cfg["recursive"] = bool(self.recursive_var.get())
-        self.cfg["filename_date_fallback"] = bool(self.fname_date_var.get())
-        error = core.validate_template(self.cfg["template"]) or core.validate_year_folder(self.cfg["year_folder"])
+        error = core.validate_template(
+            self.cfg.get("template", "")
+        ) or core.validate_year_folder(self.cfg.get("year_folder", ""))
         if error:
-            messagebox.showwarning(APP_TITLE, error)
+            messagebox.showwarning(
+                APP_TITLE,
+                "В настройках некорректный шаблон:\n"
+                f"{error}\n\nОткройте настройки и исправьте.",
+            )
+            self._open_settings()
             return
-        cfgmod.save_settings(self.cfg)
         if self.folder is None:
             self._choose_folder()
             return
@@ -472,12 +547,6 @@ class App(BaseClass):
                 return
         self.folder = folder
         self._remember(folder)
-        self.folder_label.config(text=str(folder))
-        self.cfg["template"] = self.template_var.get()
-        self.cfg["year_folder"] = self.year_var.get()
-        self.cfg["mode"] = self.mode_var.get()
-        self.cfg["recursive"] = bool(self.recursive_var.get())
-        self.cfg["filename_date_fallback"] = bool(self.fname_date_var.get())
 
         self._cancel = threading.Event()
         self._progress = {"done": 0, "total": 0}
@@ -485,7 +554,9 @@ class App(BaseClass):
         self.progress_bar.config(mode="indeterminate")
         self.progress_bar.start(12)
         self.show("progress")
-        threading.Thread(target=self._scan_worker, args=(folder, dict(self.cfg)), daemon=True).start()
+        threading.Thread(
+            target=self._scan_worker, args=(folder, dict(self.cfg)), daemon=True
+        ).start()
 
     def _scan_worker(self, folder: Path, cfg: dict) -> None:
         try:
@@ -497,65 +568,135 @@ class App(BaseClass):
     def _on_progress(self, done: int, total: int) -> None:
         self._progress = {"done": done, "total": total}
 
-    # --- предпросмотр --------------------------------------------------------
+    # --- просмотр ------------------------------------------------------------
 
     def _build_preview(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["preview"] = frame
+        """Экран просмотра.
 
-        top = tk.Frame(frame, bg=BG)
-        top.pack(fill="x", pady=(0, 8))
-        ttk.Label(top, text=STRINGS["preview_title"], style="Head.TLabel").pack(side="left")
-        self.preview_path = tk.Label(top, text="", bg=BG, fg=MUTED, font=("Segoe UI", 9))
-        self.preview_path.pack(side="left", padx=12)
+        Вертикального скролла нет: колонки подогнаны под ширину окна, длинные
+        имена обрезаются. Заголовки рисуются на Canvas — так видно разделение
+        столбцов зелёными линиями, чего штатный Treeview не умеет.
+        """
+        frame = self._screen("preview")
+
+        self._label(
+            frame, STRINGS["preview_title"], 18, GREEN, "bold", anchor="w"
+        ).place(x=CONTENT_X, y=MARGIN)
+
+        self._settings_button_p = ui_kit.RoundButton(
+            frame,
+            "Настройки",
+            command=self._open_settings,
+            kind="primary",
+            width=125,
+            height=34,
+            icon="icon_settings",
+            font_size=10,
+            bg=BG,
+        )
+        self._settings_button_p.place(x=744, y=MARGIN)
 
         chips = tk.Frame(frame, bg=BG)
-        chips.pack(fill="x", pady=(0, 8))
+        chips.place(x=CONTENT_X, y=62, width=CONTENT_W, height=32)
         self.chip_var = tk.StringVar(value="all")
-        self.chips: dict[str, ttk.Radiobutton] = {}
+        self.chips: dict[str, ui_kit.RadioDot] = {}
+        x = 0
         for key, label in (
             ("all", "все"),
-            (core.RENAME, STRINGS["col_new"]),
+            (core.RENAME, "к переименованию"),
             (core.UNCHANGED, "без изменений"),
             (core.BAD_DATE, "дата недостоверна"),
             (core.ERROR, "ошибки"),
         ):
-            button = ttk.Radiobutton(
-                chips, text=label, value=key, variable=self.chip_var, style="Card.TRadiobutton",
+            width = {
+                "all": 92,
+                core.RENAME: 200,
+                core.UNCHANGED: 196,
+                core.BAD_DATE: 198,
+                core.ERROR: 112,
+            }[key]
+            dot = ui_kit.RadioDot(
+                chips,
+                f"{label} · 0",
+                self.chip_var,
+                key,
+                bg=BG,
+                font_size=10,
                 command=self._fill_table,
             )
-            button.pack(side="left", padx=(0, 14))
-            self.chips[key] = button
+            dot.configure(width=width, height=26)
+            dot.place(x=x, y=0)
+            self.chips[key] = dot
+            x += width
 
-        table_card = self._card(frame)
-        table_card.pack(fill="both", expand=True)
-        columns = ("old", "new", "folder", "source", "status")
-        self.tree = ttk.Treeview(table_card, columns=columns, show="headings", selectmode="browse")
-        widths = {"old": 250, "new": 260, "folder": 100, "source": 130, "status": 130}
+        table = tk.Frame(frame, bg=BG, highlightbackground=LINE, highlightthickness=1)
+        table.place(x=CONTENT_X, y=100, width=CONTENT_W, height=370)
+
+        names = tuple(name for name, _ in COLUMNS)
         titles = {
-            "old": STRINGS["col_old"], "new": STRINGS["col_new"], "folder": STRINGS["col_folder"],
-            "source": STRINGS["col_source"], "status": STRINGS["col_status"],
+            "old": STRINGS["col_old"],
+            "new": STRINGS["col_new"],
+            "folder": STRINGS["col_folder"],
+            "source": STRINGS["col_source"],
+            "status": STRINGS["col_status"],
         }
-        for column in columns:
-            self.tree.heading(column, text=titles[column])
-            self.tree.column(column, width=widths[column], anchor="w", stretch=column in ("old", "new"))
-        scroll = ttk.Scrollbar(table_card, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True, padx=(1, 0), pady=1)
-        scroll.pack(side="right", fill="y", pady=1, padx=(0, 1))
-        self.tree.tag_configure(core.ERROR, foreground="#B3261E")
+        self.tree = ttk.Treeview(
+            table, columns=names, show="headings", selectmode="browse", height=10
+        )
+        for name, width in COLUMNS:
+            self.tree.heading(name, text=titles[name], anchor="w")
+            self.tree.column(name, width=width, minwidth=60, anchor="w", stretch=True)
+
+        hscroll = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(xscrollcommand=hscroll.set)
+        self.tree.pack(fill="both", expand=True, padx=1, pady=(1, 0))
+        hscroll.pack(fill="x", pady=(0, 1))
+
+        self.tree.tag_configure(core.ERROR, foreground=DANGER)
         self.tree.tag_configure(core.BAD_DATE, foreground="#8A6D3B")
         self.tree.tag_configure(core.UNCHANGED, foreground=MUTED)
+        self.tree.bind("<<TreeviewSelect>>", self._update_source_hint)
 
-        bottom = tk.Frame(frame, bg=BG)
-        bottom.pack(fill="x", pady=(10, 0))
-        self.summary_label = tk.Label(bottom, text="", bg=BG, fg=INK, font=("Segoe UI", 10))
-        self.summary_label.pack(side="left")
-        ttk.Button(bottom, text=STRINGS["btn_back"], command=self._back_home).pack(side="right")
-        self.run_button = ttk.Button(
-            bottom, text=STRINGS["btn_go"], style="Accent.TButton", command=self._run_operation
+        # Слева — сколько файлов к переименованию, справа под ним — описание даты.
+        self.summary_label = self._label(frame, "", 11, INK, "normal", anchor="w")
+        self.summary_label.place(x=CONTENT_X, y=484, width=380)
+
+        self.source_hint = self._label(
+            frame,
+            "",
+            9,
+            MUTED,
+            "normal",
+            anchor="e",
+            justify="right",
+            wraplength=420,
         )
-        self.run_button.pack(side="right", padx=10)
+        self.source_hint.place(x=440, y=486, width=430, height=44)
+
+        self.source_hint.config(text="Выберите строку, чтобы увидеть источник даты.")
+
+        self._back_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_back"],
+            command=self._back_home,
+            kind="secondary",
+            width=207,
+            height=52,
+            bg=BG,
+        )
+        self._back_button.place(x=390, y=544)
+
+        self.run_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_go"],
+            command=self._run_operation,
+            kind="primary",
+            width=255,
+            height=52,
+            font_size=13,
+            bg=BG,
+        )
+        self.run_button.place(x=621, y=544)
 
     def _back_home(self) -> None:
         self.show("home")
@@ -573,35 +714,46 @@ class App(BaseClass):
         if reset_scroll:
             self.tree.delete(*self.tree.get_children())
         items = self._current_items()
-        batch = 300
 
-        def feed(start: int) -> None:
-            if self.current != "preview":
-                return
-            for index in range(start, min(start + batch, len(items))):
-                item = items[index]
-                self.tree.insert(
-                    "", "end",
-                    values=(
-                        item.name,
-                        item.dst_name or "—",
-                        item.year_folder or "—",
-                        item.source,
-                        core.STATUS_LABELS.get(item.status, item.status) + (f" · {item.note}" if item.note else ""),
-                    ),
-                    tags=(item.status,),
-                )
-            if start + batch < len(items):
-                self.after(10, lambda: feed(start + batch))
+        for item in items:
+            self.tree.insert(
+                "",
+                "end",
+                values=(
+                    item.name,
+                    item.dst_name or "—",
+                    item.year_folder or "—",
+                    item.source,
+                    core.STATUS_LABELS.get(item.status, item.status)
+                    + (f" · {item.note}" if item.note else ""),
+                ),
+                tags=(item.status,),
+            )
+        self._update_source_hint()
 
-        feed(0)
+    def _update_source_hint(self, _event=None) -> None:  # type: ignore[no-untyped-def]
+        if not hasattr(self, "source_hint"):
+            return
+        selection = self.tree.selection()
+        if not selection:
+            self.source_hint.config(
+                text="Выберите строку, чтобы увидеть источник даты."
+            )
+            return
+        index = self.tree.index(selection[0])
+        items = self._current_items()
+        if index >= len(items):
+            return
+        item = items[index]
+        explanation = EXPLANATIONS.get(item.source, "Источник даты не указан.")
+        self.source_hint.config(text=explanation)
 
     def _show_plan(self, result: core.PlanResult) -> None:
         self.plan_result = result
         counts = result.counts()
         total = len(result.items)
-        self.preview_path.config(text=str(self.folder or ""))
-        for key, button in self.chips.items():
+
+        for key, dot in self.chips.items():
             label = {
                 "all": f"все · {total}",
                 core.RENAME: f"к переименованию · {counts.get(core.RENAME, 0)}",
@@ -609,38 +761,54 @@ class App(BaseClass):
                 core.BAD_DATE: f"дата недостоверна · {counts.get(core.BAD_DATE, 0)}",
                 core.ERROR: f"ошибки · {counts.get(core.ERROR, 0)}",
             }[key]
-            button.config(text=label)
+            dot._label = label
+            dot._draw()
 
-        parts = [f"{counts.get(core.RENAME, 0)} {plural(counts.get(core.RENAME, 0), 'файл', 'файла', 'файлов')} к переименованию"]
-        if counts.get(core.UNCHANGED):
-            parts.append(f"{counts[core.UNCHANGED]} уже на месте")
-        if counts.get(core.BAD_DATE):
-            parts.append(f"{counts[core.BAD_DATE]} с недостоверной датой")
-        if counts.get(core.ERROR):
-            parts.append(f"{counts[core.ERROR]} с ошибками")
-        self.summary_label.config(text=" · ".join(parts) if total else STRINGS["nothing"])
+        rename_count = counts.get(core.RENAME, 0)
+        parts = [
+            f"{rename_count} {plural(rename_count, 'файл', 'файла', 'файлов')} "
+            f"к переименованию"
+        ]
+        self.summary_label.config(
+            text=" · ".join(parts) if total else STRINGS["nothing"]
+        )
 
         self.chip_var.set("all")
         self.show("preview")
         self._fill_table()
-        self.run_button.state(["!disabled"] if counts.get(core.RENAME) else ["disabled"])
+        self.run_button.set_enabled(bool(rename_count))
 
-    # --- выполнение ----------------------------------------------------------
+    # --- прогресс ------------------------------------------------------------
 
     def _build_progress(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["progress"] = frame
-        card = self._card(frame)
-        card.pack(fill="x", pady=(40, 0))
-        self.progress_label = tk.Label(card, text=STRINGS["working"], bg=CARD, fg=BLUE, font=("Segoe UI", 12))
-        self.progress_label.pack(anchor="w", padx=24, pady=(24, 10))
-        self.progress_bar = ttk.Progressbar(card, mode="determinate", maximum=100)
-        self.progress_bar.pack(fill="x", padx=24)
-        self.progress_detail = tk.Label(card, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 9))
-        self.progress_detail.pack(anchor="w", padx=24, pady=(8, 6))
-        ttk.Button(card, text=STRINGS["btn_cancel"], command=self._cancel_current).pack(
-            side="right", padx=24, pady=(0, 22)
+        frame = self._screen("progress")
+
+        self.progress_label = self._label(
+            frame, STRINGS["working"], 16, GREEN, "bold", anchor="w"
         )
+        self.progress_label.place(x=160, y=250, width=580)
+
+        self.progress_bar = ttk.Progressbar(
+            frame,
+            mode="determinate",
+            maximum=100,
+            style="Green.Horizontal.TProgressbar",
+        )
+        self.progress_bar.place(x=160, y=292, width=580, height=10)
+
+        self.progress_detail = self._label(frame, "", 10, MUTED, "normal", anchor="w")
+        self.progress_detail.place(x=160, y=312, width=580)
+
+        self._cancel_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_cancel"],
+            command=self._cancel_current,
+            kind="secondary",
+            width=180,
+            height=46,
+            bg=BG,
+        )
+        self._cancel_button.place(x=560, y=356)
 
     def _cancel_current(self) -> None:
         self._cancel.set()
@@ -660,13 +828,18 @@ class App(BaseClass):
         self.progress_detail.config(text="")
         self.show("progress")
         threading.Thread(
-            target=self._run_worker, args=(self.folder, self.plan_result, dict(self.cfg)), daemon=True
+            target=self._run_worker,
+            args=(self.folder, self.plan_result, dict(self.cfg)),
+            daemon=True,
         ).start()
 
     def _run_worker(self, folder: Path, result: core.PlanResult, cfg: dict) -> None:
         try:
             stats = core.execute(
-                folder, result, cfg, cfgmod.journal_dir(),
+                folder,
+                result,
+                cfg,
+                cfgmod.journal_dir(),
                 progress=lambda done, total, _item: self._on_progress(done, total),
                 cancel=self._cancel,
             )
@@ -677,117 +850,172 @@ class App(BaseClass):
     # --- результат -----------------------------------------------------------
 
     def _build_result(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["result"] = frame
+        frame = self._screen("result")
 
-        card = self._card(frame)
-        card.pack(fill="both", expand=True)
-        self.mascot = Mascot(card, width=280, height=250, bg=CARD)
-        self.mascot.pack(pady=(22, 6))
+        photo = load_photo(cfgmod.assets_dir() / "mascot_work.png", (420, 580))
+        if photo is not None:
+            holder = tk.Label(frame, image=photo, bg=BG, bd=0)
+            holder.image = photo
+            holder.place(x=0, y=40, width=420, height=580)
 
-        self.result_title = tk.Label(card, text=STRINGS["result_title"], bg=CARD, fg=BLUE, font=("Segoe UI Semibold", 17))
-        self.result_title.pack()
-        self.result_summary = tk.Label(card, text="", bg=CARD, fg=INK, font=("Segoe UI", 10), justify="center")
-        self.result_summary.pack(pady=(6, 16))
+        self.result_title = self._label(
+            frame, "Магия сработала!", 26, GREEN, "bold", anchor="center"
+        )
+        self.result_title.place(x=450, y=150, width=420)
 
-        buttons = tk.Frame(card, bg=CARD)
-        buttons.pack(pady=(0, 8))
-        self.thanks_button = ttk.Button(buttons, text=STRINGS["thanks"], style="Accent.TButton", command=self._on_thanks)
-        self.thanks_button.pack(side="left", padx=6)
-        self.retry_button = ttk.Button(buttons, text=STRINGS["retry"], command=self._on_retry)
-        self.undo_button = ttk.Button(buttons, text=STRINGS["undo"], command=self._on_undo)
-        self.journal_button = ttk.Button(buttons, text=STRINGS["open_journal"], command=lambda: self.show("journal"))
+        self.result_summary = self._label(
+            frame,
+            "",
+            11,
+            INK,
+            "normal",
+            anchor="center",
+            justify="center",
+            wraplength=420,
+        )
+        self.result_summary.place(x=450, y=205, width=420)
 
-        links = tk.Frame(card, bg=CARD)
-        links.pack(pady=(0, 18))
-        ttk.Button(links, text=STRINGS["again"], style="Link.TButton", command=self._back_home).pack(side="left", padx=8)
+        # Обе кнопки одной ширины.
+        btn_w = 200
+        self.thanks_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["thanks"],
+            command=self._on_thanks,
+            kind="secondary",
+            width=btn_w,
+            height=53,
+            font_size=11,
+            bg=BG,
+        )
+        self.thanks_button.place(x=450, y=400)
+
+        self.journal_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["open_folder"],
+            command=self._open_result_folder,
+            kind="primary",
+            width=btn_w,
+            height=53,
+            icon="icon_folder",
+            font_size=11,
+            bg=BG,
+        )
+        self.journal_button.place(x=670, y=400)
+
+        # «Отменить изменения» — призрачная кнопка с подсветкой, выровнена
+        # по правому краю с «Открыть папку».
+        self.undo_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["undo"],
+            command=self._on_undo,
+            kind="ghost",
+            width=btn_w,
+            height=36,
+            font_size=10,
+            bg=BG,
+        )
+        self.retry_button = ui_kit.RoundButton(
+            frame,
+            STRINGS["retry"],
+            command=self._on_retry,
+            kind="ghost",
+            width=btn_w,
+            height=36,
+            font_size=10,
+            bg=BG,
+        )
+
+    def _open_result_folder(self) -> None:
+        if not self.folder:
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(str(self.folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(self.folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(self.folder)])
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showinfo(APP_TITLE, core.human_error(exc))
 
     def _show_result(self, stats: core.RunStats) -> None:
         self.run_stats = stats
         self.last_failed = list(stats.failed)
         counts = self.plan_result.counts() if self.plan_result else {}
         improved = stats.renamed
-        self.result_title.config(text="Готово" if improved else "Нечего было менять")
 
-        lines = [
-            f"Обработано {stats.processed} {plural(stats.processed, 'файл', 'файла', 'файлов')}",
-            f"разложено: {improved} · без изменений: {counts.get(core.UNCHANGED, 0)} "
-            f"· пропущено: {counts.get(core.BAD_DATE, 0)} · ошибок: {stats.errors}",
-            f"Время: {fmt_duration(stats.elapsed)}",
-        ]
         if stats.cancelled:
-            lines.append("Остановлено по вашей команде — сделанное можно отменить.")
-        self.result_summary.config(text="\n".join(lines))
+            self.result_title.config(text="Остановлено")
+            lead = "Вы остановили работу.\nСделанное можно отменить."
+        elif improved:
+            self.result_title.config(text="Магия сработала!")
+            lead = (
+                "Хаос побеждён! Мудрый Архивариус разложил всё\n"
+                "по своим временным полкам, и ни один файл\n"
+                "не потерялся в измерениях."
+            )
+        else:
+            self.result_title.config(text="Менять нечего")
+            lead = "Все файлы уже лежат на своих местах."
 
-        for button in (self.retry_button, self.undo_button, self.journal_button):
-            button.pack_forget()
+        files_word = plural(improved, "файл", "файла", "файлов")
+        numbers = (
+            f"Разложено: {improved} {files_word} · "
+            f"без изменений: {counts.get(core.UNCHANGED, 0)} · "
+            f"ошибок: {stats.errors}\n"
+            f"Заняло: {fmt_duration(stats.elapsed)}"
+        )
+        self.result_summary.config(text=f"{lead}\n\n{numbers}")
+
+        self.retry_button.place_forget()
+        self.undo_button.place_forget()
         if self.last_failed:
-            self.retry_button.pack(side="left", padx=6)
+            self.retry_button.place(x=670, y=500)
         if improved and stats.journal_path:
-            self.undo_button.pack(side="left", padx=6)
-        self.journal_button.pack(side="left", padx=6)
+            self.undo_button.place(x=670, y=466)
 
         self.show("result")
         self._play_animation()
 
     def _play_animation(self) -> None:
         self._stop_animation()
-        assets = cfgmod.assets_dir()
-        if reduce_motion():
-            self.mascot.show_image(load_photo(assets / "mascot_work.png", (280, 250)))
+        folder = cfgmod.assets_dir() / "anim_done"
+        if reduce_motion() or not folder.is_dir():
             return
-
-        if not self._anim_frames:
-            folder = assets / "anim_done"
-            files = sorted(folder.glob("*.png"))[:120] if folder.is_dir() else []
-            for path in files:
-                photo = load_photo(path, (280, 250))
-                if photo is not None:
-                    self._anim_frames.append(photo)
-
-        if not self._anim_frames:
-            self.mascot.show_image(load_photo(assets / "mascot_idle.png", (280, 250)))
+        files = sorted(folder.glob("*.png"))[:120]
+        if not files:
             return
-
+        frames = [load_photo(path, (420, 580)) for path in files]
+        frames = [f for f in frames if f is not None]
+        if not frames:
+            return
+        self._anim_frames = frames
         delay = max(int(1000 / 24), 20)
         state = {"index": 0}
 
         def step() -> None:
-            if self.current != "result":
+            if self.current != "result" or not self._anim_frames:
                 return
-            self.mascot.show_image(self._anim_frames[state["index"] % len(self._anim_frames)])
-            state["index"] += 1
-            if state["index"] < len(self._anim_frames):
-                self._anim_after = self.after(delay, step)
-            else:
+            state["index"] = (state["index"] + 1) % len(self._anim_frames)
+            if state["index"] == 0:
                 self._anim_after = None
+                return
+            self._anim_after = self.after(delay, step)
 
-        step()
+        self._anim_after = self.after(delay, step)
 
     def _stop_animation(self) -> None:
-        if self._anim_after is not None:
-            try:
-                self.after_cancel(self._anim_after)
-            except tk.TclError:
-                pass
-            self._anim_after = None
-        if self._thanks_after is not None:
-            try:
-                self.after_cancel(self._thanks_after)
-            except tk.TclError:
-                pass
-            self._thanks_after = None
+        for attr in ("_anim_after", "_thanks_after"):
+            value = getattr(self, attr, None)
+            if value is not None:
+                try:
+                    self.after_cancel(value)
+                except tk.TclError:
+                    pass
+                setattr(self, attr, None)
 
     def _on_thanks(self) -> None:
-        assets = cfgmod.assets_dir()
-        idle = load_photo(assets / "mascot_work.png", (280, 250)) or load_photo(
-            assets / "mascot_idle.png", (280, 250)
-        )
-        if idle is not None and not reduce_motion():
-            self.mascot.show_image(idle)
-            self._thanks_after = self.after(1000, self._back_home)
-        else:
-            self._back_home()
+        self._back_home()
 
     def _on_retry(self) -> None:
         if not self.last_failed:
@@ -796,18 +1024,21 @@ class App(BaseClass):
         if stats.errors == 0:
             messagebox.showinfo(APP_TITLE, f"Получилось: {stats.renamed}.")
         else:
-            messagebox.showwarning(APP_TITLE, f"Всё ещё занято или недоступно: {stats.errors}.")
+            messagebox.showwarning(
+                APP_TITLE, f"Всё ещё занято или недоступно: {stats.errors}."
+            )
         if self.run_stats is not None:
             self.run_stats.renamed += stats.renamed
             self.run_stats.errors = stats.errors
         self.last_failed = list(stats.failed)
+        self.retry_button.place_forget()
         if self.last_failed:
-            self.retry_button.pack(side="left", padx=6)
-        else:
-            self.retry_button.pack_forget()
+            self.retry_button.place(x=670, y=500)
         if self.run_stats is not None:
+            good = self.run_stats.renamed
             self.result_summary.config(
-                text=f"Разложено: {self.run_stats.renamed} · ошибок: {self.run_stats.errors}"
+                text=f"Разложено: {good} {plural(good, 'файл', 'файла', 'файлов')} · "
+                f"ошибок: {self.run_stats.errors}"
             )
 
     def _on_undo(self) -> None:
@@ -818,7 +1049,10 @@ class App(BaseClass):
         try:
             stats = core.rollback(self.run_stats.journal_path)
         except Exception as exc:  # noqa: BLE001
-            messagebox.showerror(APP_TITLE, f"Не удалось отменить изменения: {core.human_error(exc)}")
+            messagebox.showerror(
+                APP_TITLE,
+                f"Не удалось отменить изменения: {core.human_error(exc)}",
+            )
             return
         text = f"Возвращено файлов: {stats.restored}"
         if stats.skipped:
@@ -831,30 +1065,76 @@ class App(BaseClass):
     # --- журнал --------------------------------------------------------------
 
     def _build_journal(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["journal"] = frame
-        top = tk.Frame(frame, bg=BG)
-        top.pack(fill="x", pady=(0, 8))
-        ttk.Label(top, text="Журнал операций", style="Head.TLabel").pack(side="left")
-        ttk.Button(top, text="Открыть папку журнала", command=self._open_journal_folder).pack(side="right")
-        ttk.Button(top, text=STRINGS["btn_back"], command=self._back_home).pack(side="right", padx=8)
+        frame = self._screen("journal")
 
-        card = self._card(frame)
-        card.pack(fill="both", expand=True)
-        self.journal_tree = ttk.Treeview(card, columns=("file", "moved", "errors"), show="headings")
+        self._label(frame, "Журнал операций", 18, GREEN, "bold", anchor="w").place(
+            x=CONTENT_X, y=MARGIN
+        )
+
+        self._back_button_j = ui_kit.RoundButton(
+            frame,
+            "На главную",
+            command=self._back_home,
+            kind="secondary",
+            width=160,
+            height=38,
+            icon="icon_back",
+            font_size=10,
+            bg=BG,
+        )
+        self._back_button_j.place(x=709, y=MARGIN)
+
+        table = tk.Frame(frame, bg=BG, highlightbackground=LINE, highlightthickness=1)
+        table.place(x=CONTENT_X, y=72, width=CONTENT_W, height=420)
+
+        self.journal_tree = ttk.Treeview(
+            table, columns=("file", "moved", "errors"), show="headings", height=12
+        )
         for column, title, width in (
-            ("file", "Сессия", 320), ("moved", "Операций", 110), ("errors", "Ошибок", 110)
+            ("file", "Сессия", 420),
+            ("moved", "Операций", 150),
+            ("errors", "Ошибок", 150),
         ):
-            self.journal_tree.heading(column, text=title)
-            self.journal_tree.column(column, width=width, anchor="w")
-        self.journal_tree.pack(side="left", fill="both", expand=True, padx=1, pady=1)
-        scroll = ttk.Scrollbar(card, orient="vertical", command=self.journal_tree.yview)
-        self.journal_tree.configure(yscrollcommand=scroll.set)
-        scroll.pack(side="right", fill="y", pady=1)
+            self.journal_tree.heading(column, text=title, anchor="w")
+            self.journal_tree.column(column, width=width, anchor="w", stretch=True)
+        style = ttk.Style(self)
+        style.configure(
+            "Treeview.Heading",
+            font=ui_kit.font(10, "medium"),
+            background=GREEN_SOFT,
+            foreground=GREEN,
+            relief="flat",
+            padding=(8, 8),
+            borderwidth=0,
+        )
+        self.journal_tree.pack(fill="both", expand=True, padx=1, pady=1)
 
-        bottom = tk.Frame(frame, bg=BG)
-        bottom.pack(fill="x", pady=(10, 0))
-        ttk.Button(bottom, text="Отменить выбранную сессию", command=self._undo_selected).pack(side="left")
+        self._undo_button_j = ui_kit.RoundButton(
+            frame,
+            "Отменить выбранную сессию",
+            command=self._undo_selected,
+            kind="secondary",
+            width=290,
+            height=48,
+            icon="icon_undo",
+            font_size=11,
+            bg=BG,
+        )
+        self._undo_button_j.place(x=CONTENT_X, y=528)
+
+        self._open_journal_btn = ui_kit.RoundButton(
+            frame,
+            "Папка журнала",
+            command=self._open_journal_folder,
+            kind="ghost",
+            width=170,
+            height=48,
+            icon="icon_journal",
+            font_size=10,
+            bg=BG,
+        )
+        self._open_journal_btn.place(x=699, y=528)
+
         self._refresh_journals()
 
     def _refresh_journals(self) -> None:
@@ -862,9 +1142,14 @@ class App(BaseClass):
         for path in core.list_journals(cfgmod.journal_dir()):
             summary = core.journal_summary(path)
             self.journal_tree.insert(
-                "", "end",
+                "",
+                "end",
                 iid=str(path),
-                values=(path.stem.replace("_", " "), summary["moved"], summary["errors"]),
+                values=(
+                    path.stem.replace("_", " "),
+                    summary["moved"],
+                    summary["errors"],
+                ),
             )
 
     def _undo_selected(self) -> None:
@@ -873,12 +1158,16 @@ class App(BaseClass):
             messagebox.showinfo(APP_TITLE, "Выберите сессию в списке.")
             return
         path = Path(selection[0])
-        if not messagebox.askyesno(APP_TITLE, f"Вернуть файлы сессии «{path.stem}» на прежние места?"):
+        if not messagebox.askyesno(
+            APP_TITLE,
+            f"Вернуть файлы сессии «{path.stem}» на прежние места?",
+        ):
             return
         stats = core.rollback(path)
         messagebox.showinfo(
             APP_TITLE,
-            f"Возвращено: {stats.restored}\nПропущено: {stats.skipped}\nОшибок: {stats.errors}",
+            f"Возвращено: {stats.restored}\nПропущено: {stats.skipped}\n"
+            f"Ошибок: {stats.errors}",
         )
         self._refresh_journals()
 
@@ -891,92 +1180,170 @@ class App(BaseClass):
                 subprocess.run(["open", str(folder)], check=False)
             else:
                 subprocess.run(["xdg-open", str(folder)], check=False)
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             messagebox.showinfo(APP_TITLE, f"Папка журнала: {folder}")
 
     # --- настройки -----------------------------------------------------------
 
     def _build_settings(self) -> None:
-        frame = tk.Frame(self.container, bg=BG)
-        self.screens["settings"] = frame
-        top = tk.Frame(frame, bg=BG)
-        top.pack(fill="x", pady=(0, 8))
-        ttk.Label(top, text="Настройки", style="Head.TLabel").pack(side="left")
-        ttk.Button(top, text=STRINGS["btn_back"], command=self._back_home).pack(side="right")
+        """Настройки. Расстояние «заголовок → поле» везде одинаковое."""
+        frame = self._screen("settings")
 
-        card = self._card(frame)
-        card.pack(fill="both", expand=True)
-
-        body = tk.Frame(card, bg=CARD)
-        body.pack(fill="both", expand=True, padx=22, pady=18)
-
-        tk.Label(body, text=STRINGS["template"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=0, column=0, sticky="w"
+        self._label(frame, "Настройки", 18, GREEN, "bold", anchor="w").place(
+            x=CONTENT_X, y=MARGIN
         )
+
+        # Маскот уменьшен и поднят, чтобы кнопки не обрезали картинку.
+        photo = load_photo(cfgmod.assets_dir() / "mascot_settings.png", (300, 420))
+        if photo is not None:
+            holder = tk.Label(frame, image=photo, bg=BG, bd=0)
+            holder.image = photo
+            holder.place(x=560, y=70, width=300, height=420)
+
+        hint_font = ui_kit.font(8)
+        field_w = 403
+        title_h = 20
+        field_h = 40
+        y = 62
+
+        # --- шаблон названия файла ---
+        self._label(frame, STRINGS["template"], 11, GREEN, "normal", anchor="w").place(
+            x=CONTENT_X, y=y, height=title_h
+        )
+        y += SETTINGS_TITLE_GAP
         self.s_template = tk.StringVar(value=self.cfg.get("template", ""))
-        ttk.Entry(body, textvariable=self.s_template, width=40).grid(row=1, column=0, sticky="w", pady=(0, 4))
-        self.s_template_err = tk.Label(body, text="", bg=CARD, fg="#B3261E", font=("Segoe UI", 8))
-        self.s_template_err.grid(row=2, column=0, sticky="w")
+        self.template_field = ui_kit.Field(
+            frame, self.s_template, width=field_w, height=field_h, font_size=11, bg=BG
+        )
+        self.template_field.place(x=30, y=y)
         self.s_template.trace_add("write", lambda *_: self._validate_settings())
+        y += field_h + 8
 
-        tk.Label(body, text=STRINGS["year_folder"], bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=3, column=0, sticky="w", pady=(12, 0)
-        )
+        tk.Label(
+            frame,
+            text="{YYYY} — год, {YY} — две цифры года, {MM} — месяц, {DD} — день,\n"
+            "{HH} — часы, {mm} — минуты, {ss} — секунды.\n"
+            "Пример: {YYYY}.{MM}.{DD}_{HH}-{mm}-{ss} → 2012.11.16_16-09-52",
+            bg=BG,
+            fg=MUTED,
+            font=hint_font,
+            justify="left",
+            anchor="nw",
+        ).place(x=CONTENT_X, y=y, width=500, height=46)
+        y += 46 + 14
+
+        # --- шаблон названия папки ---
+        self._label(
+            frame, STRINGS["year_folder"], 11, GREEN, "normal", anchor="w"
+        ).place(x=CONTENT_X, y=y, height=title_h)
+        y += SETTINGS_TITLE_GAP
         self.s_year = tk.StringVar(value=self.cfg.get("year_folder", "{YYYY}"))
-        ttk.Entry(body, textvariable=self.s_year, width=20).grid(row=4, column=0, sticky="w", pady=(0, 4))
-        self.s_year_err = tk.Label(body, text="", bg=CARD, fg="#B3261E", font=("Segoe UI", 8))
-        self.s_year_err.grid(row=5, column=0, sticky="w")
-        self.s_year.trace_add("write", lambda *_: self._validate_settings())
-
-        tk.Label(body, text="Режим работы", bg=CARD, fg=MUTED, font=("Segoe UI", 9)).grid(
-            row=6, column=0, sticky="w", pady=(12, 0)
+        self.year_field = ui_kit.Field(
+            frame, self.s_year, width=field_w, height=field_h, font_size=11, bg=BG
         )
+        self.year_field.place(x=30, y=y)
+        self.s_year.trace_add("write", lambda *_: self._validate_settings())
+        y += field_h + 8
+
+        tk.Label(
+            frame,
+            text="Те же переменные, что и у файла.\n"
+            "«Архив {YYYY}» → папка «Архив 2012».",
+            bg=BG,
+            fg=MUTED,
+            font=hint_font,
+            justify="left",
+            anchor="nw",
+        ).place(x=CONTENT_X, y=y, width=500, height=32)
+        y += 32 + 14
+
+        # --- режим работы ---
+        self._label(frame, STRINGS["mode"], 11, GREEN, "normal", anchor="w").place(
+            x=CONTENT_X, y=y, height=title_h
+        )
+        y += title_h + 8
         self.s_mode = tk.StringVar(value=self.cfg.get("mode", "inplace"))
-        modes_row = tk.Frame(body, bg=CARD)
-        modes_row.grid(row=7, column=0, sticky="w")
-        for value, label in MODES:
-            ttk.Radiobutton(
-                modes_row, text=label, value=value, variable=self.s_mode, style="Card.TRadiobutton"
-            ).pack(side="left", padx=(0, 14))
+        for index, (value, label) in enumerate(MODES):
+            dot = ui_kit.RadioDot(frame, label, self.s_mode, value, bg=BG, font_size=11)
+            dot.place(x=CONTENT_X, y=y + index * 28)
+        y += len(MODES) * 28 + 10
+
+        # --- дополнительно ---
+        self._label(frame, "Дополнительно", 11, GREEN, "normal", anchor="w").place(
+            x=CONTENT_X, y=y, height=title_h
+        )
+        y += title_h + 8
 
         self.s_recursive = tk.BooleanVar(value=bool(self.cfg.get("recursive")))
-        ttk.Checkbutton(body, text=STRINGS["recursive"], variable=self.s_recursive, style="TCheckbutton").grid(
-            row=8, column=0, sticky="w", pady=(12, 0)
-        )
+        ui_kit.CheckSquare(
+            frame, STRINGS["recursive"], self.s_recursive, bg=BG, font_size=11
+        ).place(x=CONTENT_X, y=y)
+        y += 26
+
         self.s_fname = tk.BooleanVar(value=bool(self.cfg.get("filename_date_fallback")))
-        ttk.Checkbutton(
-            body, text=STRINGS["filename_date"], variable=self.s_fname, style="TCheckbutton"
-        ).grid(row=9, column=0, sticky="w", pady=(4, 0))
+        ui_kit.CheckSquare(
+            frame, STRINGS["filename_date"], self.s_fname, bg=BG, font_size=11
+        ).place(x=CONTENT_X, y=y)
+        y += 26
+
         self.s_skip = tk.BooleanVar(value=bool(self.cfg.get("skip_system_files")))
-        ttk.Checkbutton(
-            body, text="Пропускать системные и скрытые файлы",
-            variable=self.s_skip, style="TCheckbutton",
-        ).grid(row=10, column=0, sticky="w", pady=(4, 0))
+        ui_kit.CheckSquare(
+            frame, STRINGS["skip_system"], self.s_skip, bg=BG, font_size=11
+        ).place(x=CONTENT_X, y=y)
 
-        info = tk.Label(
-            body,
-            text=(
-                f"Версия: {version.APP_VERSION}\n"
-                f"Настройки хранятся в {cfgmod.settings_path()}\n"
-                "Сетевых запросов нет, данные никуда не отправляются."
-            ),
-            bg=CARD, fg=MUTED, font=("Segoe UI", 8), justify="left",
+        # --- кнопки у нижнего края ---
+        btn_y = 544
+        self._reset_btn = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_reset"],
+            command=self._reset_settings,
+            kind="secondary",
+            width=235,
+            height=52,
+            font_size=12,
+            bg=BG,
         )
-        info.grid(row=11, column=0, sticky="w", pady=(18, 0))
+        self._reset_btn.place(x=CONTENT_X, y=btn_y)
 
-        actions = tk.Frame(card, bg=CARD)
-        actions.pack(fill="x", padx=22, pady=(0, 18))
-        ttk.Button(actions, text="Сбросить к умолчаниям", command=self._reset_settings).pack(side="left")
-        self.s_save = ttk.Button(actions, text="Сохранить", style="Big.TButton", command=self._save_settings)
-        self.s_save.pack(side="right")
+        self._settings_back_btn = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_back"],
+            command=self._settings_back,
+            kind="secondary",
+            width=207,
+            height=52,
+            font_size=12,
+            bg=BG,
+        )
+        self._settings_back_btn.place(x=390, y=btn_y)
+
+        self.s_save = ui_kit.RoundButton(
+            frame,
+            STRINGS["btn_save"],
+            command=self._save_settings,
+            kind="primary",
+            width=255,
+            height=52,
+            icon="icon_check",
+            font_size=12,
+            bg=BG,
+        )
+        self.s_save.place(x=621, y=btn_y)
+
         self._validate_settings()
 
     def _validate_settings(self) -> None:
         template_error = core.validate_template(self.s_template.get())
         year_error = core.validate_year_folder(self.s_year.get())
-        self.s_template_err.config(text=template_error or "")
-        self.s_year_err.config(text=year_error or "")
-        self.s_save.state(["disabled"] if (template_error or year_error) else ["!disabled"])
+
+        # Ошибка — красная рамка, иначе зелёная при фокусе.
+        self.template_field.set_focus_ring(
+            bool(template_error), DANGER if template_error else GREEN
+        )
+        self.year_field.set_focus_ring(
+            bool(year_error), DANGER if year_error else GREEN
+        )
+        self.s_save.set_enabled(not (template_error or year_error))
 
     def _save_settings(self) -> None:
         self.cfg.update(
@@ -988,45 +1355,33 @@ class App(BaseClass):
             skip_system_files=bool(self.s_skip.get()),
         )
         cfgmod.save_settings(self.cfg)
-        self.template_var.set(self.cfg["template"])
-        self.year_var.set(self.cfg["year_folder"])
-        self.mode_var.set(self.cfg["mode"])
-        self.recursive_var.set(self.cfg["recursive"])
-        self.fname_date_var.set(self.cfg["filename_date_fallback"])
+        self.template_field.canvas.delete("ring")
+        self.year_field.canvas.delete("ring")
         self._play_saved_feedback()
 
     def _play_saved_feedback(self) -> None:
-        """Кнопка «Сохранить» меняется на галочку, затем экран возвращается на главный."""
         button = self.s_save
-        button.state(["disabled"])
-        frames = ["✓", "✓  Сохранено"]
-        button.configure(text=frames[0])
-        steps = [(0, "✓"), (180, "✓  Сохранено")]
-
-        def set_text(index: int) -> None:
-            if self.current != "settings":
-                return
-            button.configure(text=steps[index][1])
-
-        for index, (delay, _) in enumerate(steps):
-            self.after(delay, lambda i=index: set_text(i))
-        self.after(1100, self._finish_saved_feedback)
+        button.set_enabled(False)
+        button.set_text("Сохранено")
+        self.after(700, lambda: button.set_text(STRINGS["btn_save"]))
+        self.after(900, self._finish_saved_feedback)
 
     def _finish_saved_feedback(self) -> None:
-        self.s_save.configure(text=STRINGS_SAVE_LABEL)
-        self.s_save.state(["!disabled"])
-        self._back_home()
+        self.s_save.set_text(STRINGS["btn_save"])
+        self.s_save.set_enabled(True)
+        self._settings_back()
 
     def _reset_settings(self) -> None:
         defaults = cfgmod.DEFAULTS
         self.s_template.set(defaults["template"])
         self.s_year.set(defaults["year_folder"])
         self.s_mode.set(defaults["mode"])
-        self.s_recursive.set(defaults["recursive"])
-        self.s_fname.set(defaults["filename_date_fallback"])
-        self.s_skip.set(defaults["skip_system_files"])
+        self.s_recursive.set(bool(defaults["recursive"]))
+        self.s_fname.set(bool(defaults["filename_date_fallback"]))
+        self.s_skip.set(bool(defaults["skip_system_files"]))
+        self._validate_settings()
 
-    # --- цикл событий --------------------------------------------------------
+    # --- очередь событий -----------------------------------------------------
 
     def _poll(self) -> None:
         try:
@@ -1060,21 +1415,20 @@ class App(BaseClass):
     def _on_escape(self) -> None:
         if self.current == "progress":
             self._cancel_current()
-        elif self.current in ("preview", "journal", "settings"):
-            self._back_home()
-        elif self.current == "result":
+        elif self.current == "settings":
+            self._settings_back()
+        elif self.current in ("preview", "journal", "result"):
             self._back_home()
 
     def _on_enter(self) -> None:
         if self.current == "preview":
-            if "disabled" not in self.run_button.state():
+            if self.run_button.is_enabled():
                 self._run_operation()
         elif self.current == "result":
             self._on_thanks()
 
     def _on_close(self) -> None:
         try:
-            self.cfg["geometry"] = self.winfo_geometry()
             cfgmod.save_settings(self.cfg)
         except Exception:  # noqa: BLE001
             pass
@@ -1083,6 +1437,7 @@ class App(BaseClass):
 
 def run() -> None:
     cfgmod.setup_logging()
+    fonts.load()
     app = App()
     try:
         app.mainloop()

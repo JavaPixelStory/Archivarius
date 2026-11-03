@@ -4,8 +4,8 @@
 если в заголовке нет этой строки — запущена не та версия.
 Номер сборки меняется при каждой отправке архива.
 """
-BUILD_NUMBER = 2
-BUILD_DATE = "2026-11-03"
-BUILD_ID = "fix-earliest-date"
 
-APP_VERSION = f"1.1 build {BUILD_NUMBER} ({BUILD_DATE}, {BUILD_ID})"
+BUILD_DATE = "2026-11-03"
+BUILD_ID = "uniform-spacing"
+
+APP_VERSION = f"1.3 ({BUILD_DATE}, {BUILD_ID})"
