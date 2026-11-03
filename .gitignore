@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+
+# --- Виртуальные окружения ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Данные приложения во время работы ---
+settings.json
+settings.json.tmp
+journal/
+app.log
+app.log.1
+archivarius.log*
+
+# --- Сборка PyInstaller ---
+build/
+dist/
+*.spec
+
+# --- Тестовые артефакты ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Редакторы и IDE ---
+.vscode/*
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Операционные системы ---
+Thumbs.db
+desktop.ini
+.DS_Store
