@@ -2,9 +2,10 @@
 
 Нужна, чтобы можно было глазами отличить новую сборку от старой:
 если в заголовке нет этой строки — запущена не та версия.
+Номер сборки меняется при каждой отправке архива.
 """
-import time
-
+BUILD_NUMBER = 2
 BUILD_DATE = "2026-11-03"
 BUILD_ID = "fix-earliest-date"
-APP_VERSION = f"1.1 ({BUILD_DATE}, {BUILD_ID})"
+
+APP_VERSION = f"1.1 build {BUILD_NUMBER} ({BUILD_DATE}, {BUILD_ID})"
