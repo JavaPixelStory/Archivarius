@@ -95,12 +95,11 @@ class PlanItem:
     note: str = ""
     dst_name: str = ""
     dst_path: Path | None = None
+    folder_label: str = ""
 
     @property
     def year_folder(self) -> str:
-        if self.dst_path is None:
-            return ""
-        return self.dst_path.parent.name
+        return self.folder_label
 
     @property
     def display_dst(self) -> str:
@@ -185,11 +184,12 @@ def validate_template(template: str) -> str | None:
 def validate_year_folder(template: str) -> str | None:
     if not template or not template.strip():
         return "Шаблон папки года пуст."
-    bad = sorted({c for c in template if c in FORBIDDEN_CHARS or ord(c) < 32})
+    bad = sorted({c for c in template if (c in FORBIDDEN_CHARS and c != "/") or ord(c) < 32})
     if bad:
         return f"Недопустимые символы: {' '.join(repr(c) for c in bad)}."
-    if template.rstrip() != template or template.endswith("."):
-        return "Имя папки не может заканчиваться пробелом или точкой."
+    for part in template.split("/"):
+        if not part.strip() or part != part.rstrip() or part.endswith("."):
+            return "Части пути не могут быть пустыми и заканчиваться пробелом или точкой."
     if "{YYYY}" not in template and "{YY}" not in template:
         return "Шаблон папки года должен содержать {YYYY}."
     return None
@@ -613,19 +613,26 @@ def collect_files(
 
 
 def is_already_placed(path: Path, dt: datetime, cfg: dict) -> bool:
-    """Файл уже назван по шаблону и лежит в своей папке года."""
+    """Файл уже назван по шаблону и лежит в своей вложенной папке (год/месяц)."""
     folder_template = cfg.get("year_folder", "{YYYY}")
-    expected_folder = _render(folder_template, dt, "", "", "")
-    if path.parent.name != expected_folder:
+    parts = tuple(_render(p, dt, "", "", "") for p in folder_template.split("/"))
+    if path.parent.parts[-len(parts):] != parts:
         return False
     template = cfg.get("template", "")
     expected_stem = _render(template, dt, path.stem, path.suffix.lstrip("."), "")
     expected_stem = expected_stem.replace("{MMM}", MONTHS_RU.get(dt.month, ""))
-    # Суффикс _2, _3, ... добавляется при коллизии имён — такой файл тоже уже на своём месте,
-    # иначе серия файлов с одинаковой секундой переименовывалась бы заново при каждом запуске.
     if path.stem == expected_stem:
         return True
     return bool(re.fullmatch(re.escape(expected_stem) + r"_\d+", path.stem))
+
+
+def _blocking_part(root: Path, folder: Path) -> Path | None:
+    current = root
+    for part in folder.relative_to(root).parts:
+        current = current / part
+        if current.exists() and not current.is_dir():
+            return current
+    return None
 
 
 def plan(
@@ -677,6 +684,7 @@ def plan(
         assert dt is not None
         if is_already_placed(path, dt, cfg):
             item.status = UNCHANGED
+            item.folder_label = "/".join(path.parent.parts[-len(folder_template.split("/")):])
             item.dst_path = path
             result.items.append(item)
             if progress:
@@ -692,9 +700,10 @@ def plan(
                 progress(index, total)
             continue
 
-        folder_path = root / folder_name
-        if folder_path.exists() and not folder_path.is_dir():
-            note = f"В корне есть файл «{folder_name}», нужна папка — год пропущен."
+        folder_path = root.joinpath(*folder_name.split("/"))
+        blocker = _blocking_part(root, folder_path)
+        if blocker is not None:
+            note = f"В корне есть файл «{blocker.name}», нужна папка — год пропущен."
             year_blocked[folder_name] = note
             result.folder_errors.append(note)
             item.status = ERROR
@@ -708,6 +717,7 @@ def plan(
         dst_name = render_name(template, dt, path.stem, path.suffix.lstrip("."), counter)
         dst_name = _dedupe(folder_path, dst_name, taken, existing, next_attempt)
         item.dst_name = dst_name
+        item.folder_label = folder_name
         item.dst_path = folder_path / dst_name
         result.items.append(item)
         if progress:
@@ -985,14 +995,24 @@ def rollback(journal_path: Path) -> RollbackStats:
 
 
 def _prune_empty(records: Iterable[dict]) -> None:
-    """Удаляет опустевшие папки годов после отката."""
-    parents = {Path(r.get("dst", "")).parent for r in records if r.get("dst")}
-    for folder in parents:
-        try:
-            if folder.is_dir() and not os.listdir(wp(folder)):
+    """Удаляет пустые папки, созданные раскладкой. Папки исходников и их родители не трогает."""
+    records = list(records)
+    protected: set[Path] = set()
+    for r in records:
+        if r.get("src"):
+            protected.update(Path(r["src"]).parents)
+    for r in records:
+        if not r.get("dst"):
+            continue
+        folder = Path(r["dst"]).parent
+        while folder not in protected and folder.is_dir():
+            try:
+                if os.listdir(wp(folder)):
+                    break
                 folder.rmdir()
-        except OSError:
-            pass
+            except OSError:
+                break
+            folder = folder.parent
 
 
 def list_journals(folder: Path) -> list[Path]:
@@ -1038,7 +1058,7 @@ def check_folder(path: Path) -> str | None:
 
 def is_inside_year_folder(path: Path, cfg: dict) -> bool:
     """Грубая защита: папка уже выглядит как папка года."""
-    pattern = cfg.get("year_folder", "{YYYY}")
+    pattern = cfg.get("year_folder", "{YYYY}").split("/")[0]
     if "{YYYY}" in pattern:
         return bool(re.fullmatch(pattern.replace("{YYYY}", r"\d{4}").replace("{YY}", r"\d{2}"), path.name))
     return False

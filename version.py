@@ -5,7 +5,4 @@
 Номер сборки меняется при каждой отправке архива.
 """
 
-BUILD_DATE = "2026-11-03"
-BUILD_ID = "uniform-spacing"
-
-APP_VERSION = f"1.3 ({BUILD_DATE}, {BUILD_ID})"
+APP_VERSION = f"1.3"

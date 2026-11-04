@@ -60,6 +60,7 @@ STRINGS = {
     "or": "или",
     "choose": "Выберите папку",
     "recent": "Недавние папки",
+    "recent_empty": "Пока пусто — выберите папку",
     "template": "Шаблон названия файла",
     "year_folder": "Шаблон названия папки",
     "mode": "Режим работы",
@@ -71,7 +72,7 @@ STRINGS = {
     "preview_title": "Просмотр",
     "col_old": "Имя сейчас",
     "col_new": "Имя после",
-    "col_folder": "Папка года",
+    "col_folder": "Папка",
     "col_source": "Источник даты",
     "col_status": "Статус",
     "btn_go": "Навести порядок!",
@@ -121,6 +122,7 @@ MARGIN = 24  # поля по краям экрана
 HOME_GAP = 22  # одинаковый промежуток между блоками главного экрана
 HOME_TEXT_SIZE = 10  # кегль пояснения и подписи «Недавние папки»
 SETTINGS_TITLE_GAP = 24  # расстояние от заголовка до поля ввода в настройках
+SELECT_RADIUS = 16  # радиус скругления селекта «Недавние папки»
 CONTENT_X = 31
 CONTENT_W = 838  # рабочая ширина
 
@@ -454,11 +456,18 @@ class App(BaseClass):
         y += recent_label.winfo_reqheight() + 6
 
         self.recent_var = tk.StringVar()
-        self.recent_box = ttk.Combobox(
-            frame, textvariable=self.recent_var, state="readonly", font=ui_kit.font(11)
+        self.recent_box = ui_kit.RoundedSelect(
+            frame,
+            self.recent_var,
+            width=col_w,
+            height=40,
+            font_size=11,
+            radius=SELECT_RADIUS,
+            bg=BG,
+            placeholder=STRINGS["recent_empty"],
+            command=self._on_recent,
         )
-        self.recent_box.place(x=col_x, y=y, width=col_w, height=40)
-        self.recent_box.bind("<<ComboboxSelected>>", self._on_recent)
+        self.recent_box.place(x=col_x, y=y)
         self._refresh_recent()
         y += 40 + gap
 
@@ -477,12 +486,10 @@ class App(BaseClass):
 
     def _refresh_recent(self) -> None:
         folders = [p for p in self.cfg.get("last_folders", []) if os.path.isdir(p)]
-        self.recent_box["values"] = folders
-        if folders:
-            self.recent_box.current(0)
+        self.recent_box.set_values(folders, select_first=True)
 
-    def _on_recent(self, _event=None) -> None:
-        value = self.recent_var.get()
+    def _on_recent(self, _value: str | None = None) -> None:
+        value = _value or self.recent_var.get()
         if value:
             self._start_scan(Path(value))
 

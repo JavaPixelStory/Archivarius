@@ -12,7 +12,7 @@ APP_NAME = "Archivarius"
 
 DEFAULTS: dict = {
     "template": "{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}",
-    "year_folder": "{YYYY}",
+    "year_folder": "{YYYY}/{MM}",
     "mode": "inplace",
     "recursive": False,
     "date_sources": ["meta", "mtime", "ctime"],

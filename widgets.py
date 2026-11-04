@@ -675,6 +675,170 @@ class RoundButton(tk.Canvas):
         )
 
 
+class RoundedSelect(tk.Frame):
+    """Выпадающий список на скруглённой подложке.
+
+    Штатный ttk.Combobox скруглять нельзя: он рисуется средствами системной
+    темы и параметра радиуса не имеет. Здесь подложка, текст и стрелка
+    нарисованы на Canvas, а список открывается отдельным окном той же ширины.
+    """
+
+    def __init__(
+        self,
+        master,
+        textvariable: tk.StringVar,
+        values: list[str] | None = None,
+        width: int = 440,
+        height: int = 40,
+        font_size: int = 11,
+        radius: int = RADIUS_FIELD,
+        bg: str = WHITE,
+        placeholder: str = "—",
+        command=None,
+        **kwargs,
+    ):
+        super().__init__(master, bg=bg, **kwargs)
+        self._bw = width
+        self._bh = height
+        self._radius = radius
+        self._var = textvariable
+        self._values: list[str] = list(values or [])
+        self._placeholder = placeholder
+        self._command = command
+        self._font = font(font_size)
+
+        self.canvas = tk.Canvas(
+            self, width=width, height=height, bg=bg, highlightthickness=0, bd=0
+        )
+        self.canvas.pack()
+        self.canvas.configure(cursor="hand2")
+        self.canvas.bind("<Button-1>", lambda _e: self._open_menu())
+
+        self._popup: tk.Toplevel | None = None
+
+        self._draw()
+
+    # --- отрисовка ---------------------------------------------------
+    def _draw(self) -> None:
+        self.canvas.delete("all")
+        round_rect(
+            self.canvas,
+            1,
+            1,
+            self._bw - 1,
+            self._bh - 1,
+            self._radius,
+            fill=GREEN_SOFT,
+            outline="",
+        )
+
+        text = self._var.get() or self._placeholder
+        text = self._truncate(text, self._bw - 64)
+        color = GREEN if self._var.get() else MUTED
+        self.canvas.create_text(
+            16, self._bh / 2, text=text, anchor="w", fill=color, font=self._font
+        )
+
+        # Стрелка вниз: в Roboto нет подходящего символа, рисуем линиями.
+        ax, ay = self._bw - 26, self._bh / 2 - 3
+        self.canvas.create_line(ax, ay, ax + 8, ay + 7, fill=GREEN, width=2)
+        self.canvas.create_line(ax + 8, ay + 7, ax + 16, ay, fill=GREEN, width=2)
+
+    def _truncate(self, text: str, max_w: float) -> str:
+        """Обрезает длинный путь многоточием, чтобы влез в поле."""
+        if self.canvas.tk.call("font", "measure", self._font, text) <= max_w:
+            return text
+        cut = text
+        while (
+            cut
+            and self.canvas.tk.call("font", "measure", self._font, cut + "…") > max_w
+        ):
+            cut = cut[:-1]
+        return cut + "…"
+
+    # --- меню --------------------------------------------------------
+    def _open_menu(self) -> None:
+        if not self._values:
+            return
+        self._close_menu()
+        popup = tk.Toplevel(self)
+        popup.overrideredirect(True)
+        popup.configure(bg=LINE_SOFT)
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height() + 2
+        rows = min(len(self._values), 8)
+        popup.geometry(f"{self._bw}x{rows * 30 + 2}+{x}+{y}")
+
+        box = tk.Listbox(
+            popup,
+            bd=0,
+            highlightthickness=0,
+            relief="flat",
+            activestyle="none",
+            exportselection=False,
+            bg=WHITE,
+            fg=INK,
+            selectbackground=GREEN_SOFT,
+            selectforeground=GREEN,
+            font=self._font,
+        )
+        box.pack(fill="both", expand=True, padx=1, pady=1)
+        for value in self._values:
+            box.insert("end", self._truncate(value, self._bw - 32))
+        box.bind(
+            "<ButtonRelease-1>",
+            lambda _e: self._pick_index(
+                box.nearest(box.winfo_pointery() - box.winfo_rooty())
+            ),
+        )
+        box.bind("<Return>", lambda _e: self._pick_index(box.index("active")))
+        box.bind("<Escape>", lambda _e: self._close_menu())
+
+        popup.bind(
+            "<FocusOut>", lambda _e: self.after(50, self._close_menu_if_unfocused)
+        )
+        self._popup = popup
+        popup.focus_force()
+        box.focus_set()
+
+    def _close_menu_if_unfocused(self) -> None:
+        if self._popup is not None and self._popup.focus_get() is None:
+            self._close_menu()
+
+    def _close_menu(self) -> None:
+        if self._popup is not None:
+            self._popup.destroy()
+            self._popup = None
+
+    def _pick_index(self, index: int) -> None:
+        if 0 <= index < len(self._values):
+            self._pick(self._values[index])
+        self._close_menu()
+
+    def _pick(self, value: str) -> None:
+        self._var.set(value)
+        self._draw()
+        if self._command is not None:
+            self._command(value)
+
+    # --- интерфейс, совместимый с Combobox ---------------------------
+    def get(self) -> str:
+        return self._var.get()
+
+    def set_values(self, values: list[str], select_first: bool = False) -> None:
+        self._values = list(values)
+        if select_first and self._values:
+            self._var.set(self._values[0])  # без вызова command
+        elif not self._values:
+            self._var.set("")
+        self._draw()
+
+    def select_index(self, index: int) -> None:
+        if 0 <= index < len(self._values):
+            self._var.set(self._values[index])
+            self._draw()
+
+
 class Field(tk.Frame):
     """Поле ввода на светло-зелёной скруглённой подложке.
 

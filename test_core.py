@@ -43,6 +43,7 @@ def make_folder(root: Path, count: int = 1000) -> None:
 def cfg_meta(**overrides) -> dict:
     """Настройки с реальным порядком источников — как в приложении по умолчанию."""
     base = dict(cfgmod_defaults())
+    base["year_folder"] = "{YYYY}"
     base.update(overrides)
     return base
 
@@ -56,6 +57,7 @@ def cfg(**overrides) -> dict:
     """
     base = dict(cfgmod_defaults())
     base["date_sources"] = ["mtime"]
+    base["year_folder"] = "{YYYY}"
     base.update(overrides)
     return base
 
@@ -406,7 +408,7 @@ def test_metadata_dates() -> None:
         )
         check(
             "годы в папках верные",
-            {i.year_folder for i in plan_result.items} == {"2019", "2016", "2014"},
+            {i.year_folder.split("/")[0] for i in plan_result.items} == {"2019", "2016", "2014"},
             str({i.year_folder for i in plan_result.items}),
         )
 
@@ -691,6 +693,43 @@ def test_only_one_collect_dates_definition() -> None:
     count = source.count("def collect_dates(")
     check("дубликатов нет", count == 1, f"найдено {count}")
 
+def test_nested_month_folders() -> None:
+    print("\n[27] Вложенные папки: год/месяц, идемпотентность, откат")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        a = root / "a.jpg"
+        b = root / "b.jpg"
+        a.write_bytes(b"x")
+        b.write_bytes(b"y")
+        ts_a = datetime(2024, 5, 17, 14, 32, 5).timestamp()
+        ts_b = datetime(2024, 11, 2, 9, 0, 0).timestamp()
+        os.utime(a, (ts_a, ts_a))
+        os.utime(b, (ts_b, ts_b))
+        cfg_n = {**cfg(), "year_folder": "{YYYY}/{MM}"}
+
+        plan_result = core.plan(root, cfg_n)
+        labels = {i.name: i.year_folder for i in plan_result.items}
+        check("май -> 2024/05", labels.get("a.jpg") == "2024/05", str(labels))
+        check("ноябрь -> 2024/11", labels.get("b.jpg") == "2024/11", str(labels))
+
+        stats = core.execute(root, plan_result, cfg_n, JOURNAL)
+        check("файлы в месячных папках", (root / "2024" / "05").is_dir() and (root / "2024" / "11").is_dir())
+        again = core.plan(root, cfg_n)
+        check("повторный запуск ничего не двигает", all(i.status == core.UNCHANGED for i in again.items), str([i.status for i in again.items]))
+
+        core.rollback(stats.journal_path)
+        check("откат возвращает файлы", a.exists() and b.exists())
+        check("откат убирает пустые месячные и годовые папки", not (root / "2024").exists(), str(list(root.iterdir())))
+
+
+def test_nested_year_template_validation() -> None:
+    print("\n[28] Валидация вложенного шаблона папки года")
+    check("{YYYY}/{MM} валиден", core.validate_year_folder("{YYYY}/{MM}") is None)
+    check("пустая часть пути отклоняется", core.validate_year_folder("{YYYY}//{MM}") is not None)
+    check("ведущий слэш отклоняется", core.validate_year_folder("/{YYYY}") is not None)
+    check("обратный слэш отклоняется", core.validate_year_folder("{YYYY}\\{MM}") is not None)
+
+
 def main() -> int:
     print("=" * 60)
     print("Проверка ядра Архивариуса")
@@ -722,6 +761,8 @@ def main() -> int:
     test_screenshot_case_created_later_than_modified()
     test_only_one_collect_dates_definition()
     test_rename_keeps_modified_time()
+    test_nested_month_folders()
+    test_nested_year_template_validation()
     print("\n" + "=" * 60)
     print(f"Пройдено: {PASSED}   Провалено: {FAILED}")
     print("=" * 60)
