@@ -18,6 +18,7 @@ DEFAULTS: dict = {
     "date_sources": ["meta", "mtime", "ctime"],
     "filename_date_fallback": False,
     "skip_system_files": True,
+    "keep_names": False,
     "show_preview": True,
     "journal_retention": 20,
     "last_folders": [],

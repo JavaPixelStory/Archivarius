@@ -75,6 +75,46 @@ def load_icon(name: str, size: int) -> tk.PhotoImage | None:
     return photo
 
 
+def load_badge(name: str, size: int = 22, bg: str = GREEN, radius: int = 7) -> tk.PhotoImage | None:
+    """Значок на цветной подложке со скруглёнными углами.
+
+    Сами файлы в assets/icons нарисованы золотом — на белом фоне справки
+    они почти не видны. Здесь подложка рисуется Pillow, а иконка кладётся
+    сверху перекрашенной в белый (альфа-канал сохраняется).
+    """
+    key = (f"badge:{name}:{bg}:{radius}", size)
+    if key in _ICON_CACHE:
+        return _ICON_CACHE[key]
+
+    photo: tk.PhotoImage | None = None
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+
+        canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        ImageDraw.Draw(canvas).rounded_rectangle(
+            [0, 0, size - 1, size - 1], radius=radius, fill=bg
+        )
+
+        path = _assets_dir() / "icons" / f"{name}.png"
+        if path.is_file():
+            with Image.open(path) as source:
+                glyph = source.convert("RGBA")
+                glyph.thumbnail((size - 8, size - 8), Image.LANCZOS)
+                white = Image.new("RGBA", glyph.size, (255, 255, 255, 255))
+                white.putalpha(glyph.split()[3])
+                canvas.paste(
+                    white,
+                    ((size - glyph.width) // 2, (size - glyph.height) // 2),
+                    white,
+                )
+        photo = ImageTk.PhotoImage(canvas)
+    except Exception:  # noqa: BLE001 - значок не должен ломать экран
+        photo = None
+
+    _ICON_CACHE[key] = photo
+    return photo
+
+
 def toggle_image(kind: str, checked: bool, size: int = 24) -> tk.PhotoImage | None:
     """Чекбокс или радиокнопка, отрисованные Pillow с антиалиасингом.
 
@@ -349,6 +389,32 @@ def draw_icon(
             tags=tags,
         )
 
+    elif name == "icon_info":
+        # Кружок с точкой и вертикальной чертой — стандартный знак «i».
+        r = s * 0.42
+        canvas.create_oval(
+            cx - r, cy - r, cx + r, cy + r, outline=color, width=w, tags=tags
+        )
+        canvas.create_oval(
+            cx - w * 0.55,
+            cy - s * 0.19,
+            cx + w * 0.55,
+            cy - s * 0.19 + w * 1.1,
+            fill=color,
+            outline="",
+            tags=tags,
+        )
+        canvas.create_line(
+            cx,
+            cy - s * 0.05,
+            cx,
+            cy + s * 0.22,
+            fill=color,
+            width=w,
+            capstyle="round",
+            tags=tags,
+        )
+
     elif name == "icon_drop":
         canvas.create_line(
             cx,
@@ -497,6 +563,7 @@ class RoundButton(tk.Canvas):
         font_size: int = 12,
         radius: int | None = None,
         bg: str = WHITE,
+        icon_color: str | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -514,6 +581,8 @@ class RoundButton(tk.Canvas):
         self._bw = width
         self._bh = height
         self._icon = icon
+        # Свой цвет значка поверх стандартного для этого kind.
+        self._icon_color = icon_color
         self._font_size = font_size
         # Большие кнопки — 16, маленькие — 8.
         self._radius = (
@@ -629,6 +698,26 @@ class RoundButton(tk.Canvas):
                 width=1 if outline else 0,
             )
 
+        # Значок рисуем своим цветом, если задан, иначе цветом из kind.
+        icon_paint = self._icon_color or text_color
+
+        # Кнопка только с иконкой: подписи нет, центрируем сам значок.
+        if not self._label and self._icon:
+            icon_only = 24
+            photo_only = load_icon(self._icon, icon_only)
+            if photo_only is not None:
+                self.create_image(self._bw / 2, self._bh / 2, image=photo_only)
+            else:
+                draw_icon(
+                    self,
+                    self._icon,
+                    self._bw / 2,
+                    self._bh / 2,
+                    icon_only,
+                    color=icon_paint,
+                )
+            return
+
         icon_size = int(min(self._bh * 0.44, 24))
         # На кнопках Poppins Regular, без жирного начертания.
         text_font = font(self._font_size, "normal")
@@ -663,7 +752,7 @@ class RoundButton(tk.Canvas):
             self.create_image(icon_cx, self._bh / 2, image=photo)
         else:
             draw_icon(
-                self, self._icon, icon_cx, self._bh / 2, icon_size, color=text_color
+                self, self._icon, icon_cx, self._bh / 2, icon_size, color=icon_paint
             )
         self.create_text(
             text_x,

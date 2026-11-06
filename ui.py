@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -69,6 +70,7 @@ STRINGS = {
     "recursive": "Включая вложенные папки",
     "filename_date": "Брать дату из имени файла, если других нет",
     "skip_system": "Пропускать системные и скрытые файлы",
+    "keep_names": "Раскладывать без переименования",
     "preview_title": "Просмотр",
     "col_old": "Имя сейчас",
     "col_new": "Имя после",
@@ -86,6 +88,7 @@ STRINGS = {
     "undo": "Отменить изменения",
     "retry": "Повторить пропущенные",
     "nothing": "Здесь пока нечего раскладывать",
+    "help_title": "Как это работает",
 }
 
 MODES = [("inplace", STRINGS["mode_inplace"]), ("dry", STRINGS["mode_dry"])]
@@ -117,10 +120,55 @@ EXPLANATIONS = {
     core.SRC_NONE: "дат не найдено, файл оставлен без изменений.",
 }
 
+# --- справка -------------------------------------------------------------
+# Содержимое окна «i». Список пар: заголовок раздела → текст.
+
+HELP_SECTIONS: list[tuple[str, str, str]] = [
+    (
+        "icon_wand",
+        "Что делает программа",
+        "Берёт папку, где свалены файлы, и раскладывает их по годам и месяцам. Каждому файлу достаётся понятное имя — по дате создания.\nНичего не удаляется и не перезаписывается: файлы только **переезжают**.",
+    ),
+    (
+        "icon_clock",
+        "Откуда берётся дата",
+        "Сначала программа смотрит внутрь файла: у фотографий это EXIF, у PDF, документов и видео — свойства самого файла.\nЕсли внутри даты нет — читает имя файла, потом время изменения.\nИз всех найденных побеждает **самая ранняя** — она ближе всего к реальной.",
+    ),
+    (
+        "icon_folder",
+        "Как будут выглядеть папки",
+        "**Файл «IMG_4823.jpg»**, снятый 16 ноября 2012 года, станет «2012/11/2012-11-16_16-09-52.jpg».\nШаблон меняется в настройках: «{YYYY}» — только годы, «{YYYY}/{MM}» — годы и месяцы.",
+    ),
+    (
+        "icon_undo",
+        "Если что-то пошло не так",
+        "Кнопка «Отменить изменения» вернёт все файлы на прежние места — по журналу операций. Журнал хранится **отдельно** и не удаляется сам.\nВыключить компьютер посреди работы тоже не страшно: каждый перенос записывается сразу.",
+    ),
+    (
+        "icon_check",
+        "Чего программа не тронет",
+        "Системные папки — Windows, Program Files, ProgramData, корень диска — она просто не откроет.\nИсполняемые файлы (.exe, .dll, .sys, .lnk, .bat) пропускаются и остаются на месте.",
+    ),
+    (
+        "icon_check",
+        "Безопасно и без интернета",
+        "Программа не подключается к сети и ничего никуда не отправляет. Права администратора не нужны.\nСовет: перед первым запуском включите режим **«Только отчёт»** — он покажет план и ничего не изменит.",
+    ),
+]
+
+HELP_W, HELP_H = 660, 640
+HELP_PAD = 28  # поля окна справки слева и справа
+HELP_SCROLLBAR = 18  # ширина полосы прокрутки
+HELP_ICON_SIZE = 22  # сторона зелёного значка в заголовке раздела
+
 WINDOW_W, WINDOW_H = 900, 620
 MARGIN = 24  # поля по краям экрана
 HOME_GAP = 22  # одинаковый промежуток между блоками главного экрана
+HELP_BUTTON = 40  # сторона квадратной кнопки справки
+RADIUS_HELP = 20  # скругление кнопки справки: четверть стороны — остаётся квадрат
 HOME_TEXT_SIZE = 10  # кегль пояснения и подписи «Недавние папки»
+SETTINGS_TOP = 8  # отступ заголовка «Настройки» от верхнего края окна
+SETTINGS_TITLE_OFFSET = 38  # от заголовка до первого поля;
 SETTINGS_TITLE_GAP = 24  # расстояние от заголовка до поля ввода в настройках
 SELECT_RADIUS = 16  # радиус скругления селекта «Недавние папки»
 CONTENT_X = 31
@@ -172,6 +220,64 @@ def load_photo(path: Path, box: tuple[int, int]) -> tk.PhotoImage | None:
     except Exception as exc:  # noqa: BLE001
         LOG.warning("Не удалось загрузить %s: %s", path, exc)
         return None
+
+
+def load_banner(path: Path, width: int) -> tk.PhotoImage | None:
+    """Картинка точно заданной ширины, высота — по её пропорции.
+
+    load_photo() вызывает thumbnail(), а он умеет только уменьшать: картинка
+    мельче нужного размера остаётся как есть и не доходит до краёв. Здесь
+    resize() — масштаб работает в обе стороны.
+    """
+    if not path.is_file() or width <= 0:
+        return None
+    try:
+        from PIL import Image, ImageTk
+
+        with Image.open(path) as image:
+            image = image.convert("RGBA")
+            ratio = image.height / image.width if image.width else 0.5625
+            height = max(1, round(width * ratio))
+            image = image.resize((width, height), Image.LANCZOS)
+            return ImageTk.PhotoImage(image)
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("Не удалось загрузить %s: %s", path, exc)
+        return None
+
+
+MARKUP_RE = re.compile(r"\*\*(.+?)\*\*")
+
+
+def help_entry(entry):
+    """Раздел справки в любом виде.
+
+    Ожидается (иконка, заголовок, текст). Записи старого формата
+    (заголовок, текст) и случайно обёрнутые лишний раз — тоже принимаются:
+    иначе одна опечатка в HELP_SECTIONS роняет всё окно справки.
+    """
+    if isinstance(entry, (tuple, list)):
+        if len(entry) == 3:
+            return entry
+        if len(entry) == 2:
+            return None, entry[0], entry[1]
+        if len(entry) == 1:
+            return help_entry(entry[0])
+    raise ValueError(f"Непонятный раздел справки: {entry!r}")
+
+
+def _insert_markup(text: tk.Text, chunk: str, base_tag: str) -> None:
+    """Вставляет текст, превращая **вот такое** в зелёный текст без смены начертания.
+
+    Обычный insert() не умеет красить часть строки, поэтому строка режется
+    на куски: до выделения, само выделение, после. Звёздочки не попадают
+    в текст — они только разметка в HELP_SECTIONS.
+    """
+    position = 0
+    for match in MARKUP_RE.finditer(chunk):
+        text.insert("end", chunk[position : match.start()], base_tag)
+        text.insert("end", match.group(1), (base_tag, "hl"))
+        position = match.end()
+    text.insert("end", chunk[position:], base_tag)
 
 
 BaseClass = TkinterDnD.Tk if DND_AVAILABLE else tk.Tk
@@ -334,6 +440,137 @@ class App(BaseClass):
             master, text=text, bg=BG, fg=color, font=ui_kit.font(size, weight), **kwargs
         )
 
+    def _open_help(self) -> None:
+        """Окно справки. Одно на всё приложение: повторное нажатие поднимает его."""
+        existing = getattr(self, "_help_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.deiconify()
+            existing.lift()
+            existing.focus_force()
+            return
+
+        window = tk.Toplevel(self)
+        self._help_window = window
+        window.title(APP_TITLE)
+        window.configure(bg=BG)
+        window.resizable(False, False)
+        window.transient(self)
+
+        # Окно по центру главного.
+        self.update_idletasks()
+        x = self.winfo_rootx() + (WINDOW_W - HELP_W) // 2
+        y = self.winfo_rooty() + max(20, (WINDOW_H - HELP_H) // 2)
+        window.geometry(f"{HELP_W}x{HELP_H}+{x}+{y}")
+
+        header = tk.Frame(window, bg=BG)
+        header.pack(fill="x", padx=28, pady=(24, 0))
+
+        tk.Label(
+            header,
+            text=STRINGS["help_title"],
+            bg=BG,
+            fg=GREEN,
+            font=ui_kit.font(18, "bold"),
+            anchor="w",
+        ).pack(side="left")
+
+        close_btn = ui_kit.RoundButton(
+            header,
+            "Закрыть",
+            command=window.destroy,
+            kind="primary",
+            width=104,
+            height=34,
+            font_size=10,
+            bg=BG,
+        )
+        close_btn.pack(side="right")
+
+        body = tk.Frame(window, bg=BG)
+        body.pack(fill="both", expand=True, padx=28, pady=(16, 8))
+
+        text = tk.Text(
+            body,
+            bg=BG,
+            fg=INK,
+            bd=0,
+            highlightthickness=0,
+            wrap="word",
+            cursor="arrow",
+            font=ui_kit.font(11),
+            spacing1=2,
+            spacing3=6,
+            padx=0,
+            pady=0,
+        )
+        scroll = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+
+        text.tag_configure(
+            "head_icon",
+            spacing1=14,
+        )
+        text.tag_configure(
+            "head",
+            font=ui_kit.font(12, "bold"),
+            foreground=GREEN,
+            spacing1=10,
+            spacing3=4,
+        )
+        text.tag_configure(
+            "body",
+            font=ui_kit.font(11),
+            foreground=INK,
+            lmargin1=0,
+            lmargin2=0,
+            spacing3=10,
+        )
+        # Выделение цветом внутри абзаца: **текст** в HELP_SECTIONS.
+        # Цвет — основной зелёный GREEN, как у заголовков и кнопок.
+        # Только цвет: начертание остаётся обычным, как у всего абзаца.
+        text.tag_configure("hl", foreground=GREEN)
+        text.tag_configure("banner_line", justify="center", spacing1=0, spacing3=0)
+
+        # Картинка 16:9 в начале. Нет файла — справка работает без неё.
+        # Ширину берём у самого виджета, а не константой: тогда картинка
+        # упирается в те же края, что и текст, при любом размере окна.
+        text.update_idletasks()
+        banner_w = text.winfo_width()
+        if banner_w <= 1:  # окно ещё не разложено — считаем от размера окна
+            banner_w = HELP_W - HELP_PAD * 2 - HELP_SCROLLBAR
+        banner_w -= 2  # запас, чтобы картинка не задевала полосу прокрутки
+
+        banner = load_banner(cfgmod.assets_dir() / "Archivarius.jpg", banner_w)
+        if banner is not None:
+            window._banner = (
+                banner  # ссылка: иначе Tk соберёт картинку сборщиком мусора
+            )
+            text.insert("end", "\n", "banner_line")
+            text.image_create("end", image=banner)
+            text.insert("end", "\n\n", "banner_line")
+
+        # Ссылки на картинки: без них Tk соберёт их сборщиком мусора.
+        window._help_icons = []
+        for entry in HELP_SECTIONS:
+            icon, title, paragraph = help_entry(entry)
+            photo = ui_kit.load_badge(icon, HELP_ICON_SIZE) if icon else None
+            if photo is not None:
+                window._help_icons.append(photo)
+                text.insert("end", "\n", "head_icon")
+                text.image_create("end", image=photo, align="center")
+                text.insert("end", "  " + title + "\n", "head")
+            else:
+                # Нет файла иконки — заголовок без неё, справка работает.
+                text.insert("end", title + "\n", "head")
+            _insert_markup(text, paragraph + "\n", "body")
+        text.configure(state="disabled")
+
+        window.bind("<Escape>", lambda _e: window.destroy())
+        window.protocol("WM_DELETE_WINDOW", window.destroy)
+        window.focus_force()
+
     def _open_settings(self) -> None:
         """Запоминает текущий экран, чтобы «Назад» вернул именно туда."""
         self._settings_origin = self.current if self.current != "settings" else "home"
@@ -357,11 +594,39 @@ class App(BaseClass):
         """
         frame = self._screen("home")
 
+        # Квадратная кнопка справки в левом верхнем углу. Маскот начинается
+        # ниже, поэтому кнопка его не перекрывает.
+        self._help_button = ui_kit.RoundButton(
+            frame,
+            "",
+            command=self._open_help,
+            kind="primary",
+            width=HELP_BUTTON,
+            height=HELP_BUTTON,
+            icon="icon_info",
+            radius=RADIUS_HELP,
+            bg=BG,
+            icon_color="white",
+        )
+        self._help_button.place(x=MARGIN, y=MARGIN)
+
         photo = load_photo(cfgmod.assets_dir() / "mascot_idle.png", (390, 560))
         if photo is not None:
             holder = tk.Label(frame, image=photo, bg=BG, bd=0)
             holder.image = photo
             holder.place(x=MARGIN, y=40, width=390, height=560)
+
+        # Кнопка справки должна быть поверх маскота: поднимаем её в стек.
+        # Canvas переопределяет tkraise (поднимает элементы внутри холста),
+        # поэтому вызываем версию из базового класса: поднимаем сам виджет.
+        tk.Misc.tkraise(self._help_button)
+
+        # В Tkinter нет z-index: порядок наложения задаётся порядком создания, и
+        # маскот создан после кнопки, поэтому перекрывает её нижнюю половину.
+        # Поднимаем кнопку наверх среди соседей по frame.
+        # Важно: у Canvas метод lift() переопределён как tag_raise для фигур
+        # внутри холста, поэтому вызываем подъём виджета явно через tk.Misc.
+        tk.Misc.lift(self._help_button)
 
         # Одна ширина для всех элементов правой колонки, выровнены по центру.
         col_w = 440
@@ -1196,8 +1461,9 @@ class App(BaseClass):
         """Настройки. Расстояние «заголовок → поле» везде одинаковое."""
         frame = self._screen("settings")
 
+        # Заголовок поднят к краю: освободившееся место нужно четвёртому чекбоксу.
         self._label(frame, "Настройки", 18, GREEN, "bold", anchor="w").place(
-            x=CONTENT_X, y=MARGIN
+            x=CONTENT_X, y=SETTINGS_TOP
         )
 
         # Маскот уменьшен и поднят, чтобы кнопки не обрезали картинку.
@@ -1211,7 +1477,7 @@ class App(BaseClass):
         field_w = 403
         title_h = 20
         field_h = 40
-        y = 62
+        y = SETTINGS_TOP + SETTINGS_TITLE_OFFSET
 
         # --- шаблон названия файла ---
         self._label(frame, STRINGS["template"], 11, GREEN, "normal", anchor="w").place(
@@ -1297,6 +1563,12 @@ class App(BaseClass):
         ui_kit.CheckSquare(
             frame, STRINGS["skip_system"], self.s_skip, bg=BG, font_size=11
         ).place(x=CONTENT_X, y=y)
+        y += 26
+
+        self.s_keep_names = tk.BooleanVar(value=bool(self.cfg.get("keep_names")))
+        ui_kit.CheckSquare(
+            frame, STRINGS["keep_names"], self.s_keep_names, bg=BG, font_size=11
+        ).place(x=CONTENT_X, y=y)
 
         # --- кнопки у нижнего края ---
         btn_y = 544
@@ -1340,7 +1612,9 @@ class App(BaseClass):
         self._validate_settings()
 
     def _validate_settings(self) -> None:
-        template_error = core.validate_template(self.s_template.get())
+        # Без переименования шаблон имени не используется — не требуем его.
+        keep = bool(self.s_keep_names.get()) if hasattr(self, "s_keep_names") else False
+        template_error = None if keep else core.validate_template(self.s_template.get())
         year_error = core.validate_year_folder(self.s_year.get())
 
         # Ошибка — красная рамка, иначе зелёная при фокусе.
@@ -1360,6 +1634,7 @@ class App(BaseClass):
             recursive=bool(self.s_recursive.get()),
             filename_date_fallback=bool(self.s_fname.get()),
             skip_system_files=bool(self.s_skip.get()),
+            keep_names=bool(self.s_keep_names.get()),
         )
         cfgmod.save_settings(self.cfg)
         self.template_field.canvas.delete("ring")

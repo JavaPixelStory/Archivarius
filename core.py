@@ -368,35 +368,83 @@ def ooxml_date(path: Path) -> tuple[datetime | None, str]:
     return None, SRC_NONE
 
 
+_MP4_CONTAINERS = {b"moov", b"trak", b"mdia"}
+_MP4_TIME_BOXES = {b"mvhd", b"mdhd"}
+_MP4_MAX_MOOV = 64 * 1024 * 1024
+
+
+def _mp4_times(data: bytes, start: int, end: int, out: list[int]) -> None:
+    pos = start
+    while pos + 8 <= end:
+        size = int.from_bytes(data[pos:pos + 4], "big")
+        kind = data[pos + 4:pos + 8]
+        header = 8
+        if size == 1:
+            if pos + 16 > end:
+                return
+            size = int.from_bytes(data[pos + 8:pos + 16], "big")
+            header = 16
+        elif size == 0:
+            size = end - pos
+        if size < header or pos + size > end:
+            return
+        body = pos + header
+        if kind in _MP4_CONTAINERS:
+            _mp4_times(data, body, pos + size, out)
+        elif kind in _MP4_TIME_BOXES and pos + size - body >= 12:
+            width = 8 if data[body] == 1 else 4
+            if pos + size - body >= 4 + width:
+                out.append(int.from_bytes(data[body + 4:body + 4 + width], "big"))
+        pos += size
+
+
 def video_date(path: Path) -> tuple[datetime | None, str]:
-    """Тег creation_time из MP4/MOV: ищем атом mvhd в контейнере."""
+    """Время создания из MP4/MOV: атомы mvhd и mdhd внутри moov, которого может не быть в первых байтах."""
     try:
+        size_total = os.path.getsize(wp(path))
         with open(wp(path), "rb") as handle:
-            head = handle.read(4096)
-            if b"ftyp" not in head[:64]:
+            if b"ftyp" not in handle.read(64)[:64]:
                 return None, SRC_NONE
-            handle.seek(0)
-            data = handle.read(4 * 1024 * 1024)
+            moov = None
+            pos = 0
+            while pos + 8 <= size_total:
+                handle.seek(pos)
+                head = handle.read(16)
+                if len(head) < 8:
+                    break
+                size = int.from_bytes(head[:4], "big")
+                kind = head[4:8]
+                if size == 1 and len(head) >= 16:
+                    size = int.from_bytes(head[8:16], "big")
+                elif size == 0:
+                    size = size_total - pos
+                if size < 8 or pos + size > size_total:
+                    break
+                if kind == b"moov":
+                    if size <= _MP4_MAX_MOOV:
+                        handle.seek(pos)
+                        moov = handle.read(size)
+                    break
+                pos += size
     except OSError:
         return None, SRC_NONE
 
-    position = data.find(b"mvhd")
-    if position == -1:
+    if not moov:
         return None, SRC_NONE
-    try:
-        version = data[position + 4]
-        if version == 1:
-            seconds = int.from_bytes(data[position + 8:position + 16], "big")
-        else:
-            seconds = int.from_bytes(data[position + 8:position + 12], "big")
-        # 1904-01-01 — эпоха QuickTime.
-        epoch = datetime(1904, 1, 1)
-        parsed = epoch + timedelta(seconds=seconds)
-        if parsed.year < 1970:
-            return None, SRC_NONE
-        return parsed, SRC_META_CREATED
-    except (IndexError, OverflowError):
+    seconds: list[int] = []
+    _mp4_times(moov, 0, len(moov), seconds)
+    epoch = datetime(1904, 1, 1)
+    dates = []
+    for value in seconds:
+        try:
+            parsed = epoch + timedelta(seconds=value)
+        except OverflowError:
+            continue
+        if parsed.year >= 1970:
+            dates.append(parsed)
+    if not dates:
         return None, SRC_NONE
+    return min(dates), SRC_META_CREATED
 
 
 def metadata_date(path: Path) -> tuple[datetime | None, str]:
@@ -566,6 +614,7 @@ def collect_files(
     recursive: bool,
     skip_system: bool,
     cancel: threading.Event | None = None,
+    skipped_exec: list[Path] | None = None,
 ) -> list[Path]:
     found: list[Path] = []
     if not recursive:
@@ -579,6 +628,10 @@ def collect_files(
                 except OSError:
                     continue
                 if skip_system and (entry.name.lower() in SKIP_NAMES or _is_hidden(entry)):
+                    continue
+                if is_executable(Path(entry.path)):
+                    if skipped_exec is not None:
+                        skipped_exec.append(Path(entry.path))
                     continue
                 found.append(Path(entry.path))
         return found
@@ -594,6 +647,10 @@ def collect_files(
             if cancel is not None and cancel.is_set():
                 break
             if skip_system and name.lower() in SKIP_NAMES:
+                continue
+            if is_executable(Path(name)):
+                if skipped_exec is not None:
+                    skipped_exec.append(Path(os.path.join(dirpath, name)))
                 continue
             full = Path(os.path.join(dirpath, name))
             if full.is_symlink():
@@ -618,6 +675,9 @@ def is_already_placed(path: Path, dt: datetime, cfg: dict) -> bool:
     parts = tuple(_render(p, dt, "", "", "") for p in folder_template.split("/"))
     if path.parent.parts[-len(parts):] != parts:
         return False
+    # Без переименования имя не трогаем: достаточно, что папка уже верная.
+    if cfg.get("keep_names"):
+        return True
     template = cfg.get("template", "")
     expected_stem = _render(template, dt, path.stem, path.suffix.lstrip("."), "")
     expected_stem = expected_stem.replace("{MMM}", MONTHS_RU.get(dt.month, ""))
@@ -643,7 +703,14 @@ def plan(
 ) -> PlanResult:
     result = PlanResult()
     now = datetime.now()
-    paths = collect_files(root, bool(cfg.get("recursive")), bool(cfg.get("skip_system_files")), cancel)
+    skipped_exec: list[Path] = []
+    paths = collect_files(
+        root,
+        bool(cfg.get("recursive")),
+        bool(cfg.get("skip_system_files")),
+        cancel,
+        skipped_exec,
+    )
     paths.sort(key=lambda p: (str(p.parent).lower(), p.name.lower()))
 
     template = cfg.get("template") or "{YYYY}-{MM}-{DD}_{HH}-{mm}-{ss}"
@@ -655,6 +722,18 @@ def plan(
     existing: dict[str, set[str]] = {}
     next_attempt: dict[str, int] = {}
     year_blocked: dict[str, str] = {}
+
+    # Исполняемые файлы не раскладываются: переименование ломает программы.
+    for blocked in skipped_exec:
+        result.items.append(
+            PlanItem(
+                src=blocked,
+                name=blocked.name,
+                ext=blocked.suffix.lstrip("."),
+                status=SKIPPED,
+                note="исполняемый файл — пропущен",
+            )
+        )
 
     for index, path in enumerate(paths, start=1):
         if cancel is not None and cancel.is_set():
@@ -713,8 +792,14 @@ def plan(
                 progress(index, total)
             continue
 
-        counter = f"{index:03d}" if "{N}" in template else ""
-        dst_name = render_name(template, dt, path.stem, path.suffix.lstrip("."), counter)
+        if cfg.get("keep_names"):
+            # Раскладка без переименования: имя остаётся прежним.
+            dst_name = path.name
+        else:
+            counter = f"{index:03d}" if "{N}" in template else ""
+            dst_name = render_name(
+                template, dt, path.stem, path.suffix.lstrip("."), counter
+            )
         dst_name = _dedupe(folder_path, dst_name, taken, existing, next_attempt)
         item.dst_name = dst_name
         item.folder_label = folder_name
@@ -1043,12 +1128,181 @@ def journal_summary(path: Path) -> dict:
     return {"total": total, "moved": moved, "errors": errors}
 
 
+# --- защита от системных папок ----------------------------------------------
+#
+# Программа переименовывает всё, что найдёт в выбранной папке. Если выбрать
+# Windows или Program Files, разложатся по датам файлы программ, и приложения
+# перестанут запускаться. Права администратора от такой ошибки не спасают —
+# при их наличии запись пройдёт. Поэтому такие пути запрещены явно.
+
+# Переменные окружения Windows, содержимое которых трогать нельзя.
+PROTECTED_ENV_VARS = (
+    "SystemRoot",
+    "windir",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "ProgramFilesArm",
+    "ProgramW6432",
+    "ProgramData",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+)
+
+# Имена папок, которые запрещены на системном диске.
+PROTECTED_DIR_NAMES = {
+    "windows",
+    "program files",
+    "program files (x86)",
+    "programdata",
+    "system32",
+    "syswow64",
+    "winsxs",
+    "recovery",
+    "perflogs",
+    "$recycle.bin",
+    "system volume information",
+}
+
+# Каталоги POSIX: тот же смысл для Linux и macOS.
+PROTECTED_POSIX_DIRS = (
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/boot",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/var",
+    "/opt",
+    "/sys",
+    "/proc",
+    "/dev",
+    "/run",
+    "/snap",
+    "/srv",
+    "/root",
+    "/System",
+    "/Library",
+    "/Applications",
+    "/private",
+    "/cores",
+)
+
+# Исполняемые файлы: переименование ломает программы и ярлыки.
+EXECUTABLE_SUFFIXES = {
+    ".exe",
+    ".dll",
+    ".sys",
+    ".msi",
+    ".msix",
+    ".msp",
+    ".com",
+    ".scr",
+    ".cpl",
+    ".ocx",
+    ".drv",
+    ".lnk",
+    ".bat",
+    ".cmd",
+    ".ps1",
+    ".vbs",
+    ".jar",
+    ".appx",
+}
+
+
+def _resolve(path: Path) -> Path:
+    try:
+        return path.resolve()
+    except (OSError, ValueError):
+        return path
+
+
+def _drive_of(path: Path) -> str:
+    """Диск или корень, к которому относится путь. Для сравнения путей между собой."""
+    text = os.path.normcase(str(path))
+    return os.path.splitdrive(text)[0] or "/"
+
+
+def _under(target: str, base: str) -> bool:
+    """target лежит внутри base или совпадает с ним. Разделители приводятся к «/».
+
+    Сравнивать через os.sep нельзя: на Linux он «/», и Windows-путь
+    «C:\\Windows\\System32» не распознавался бы как вложенный в «C:\\Windows».
+    """
+    target = target.replace("\\", "/").rstrip("/")
+    base = base.replace("\\", "/").rstrip("/")
+    if not base:
+        return False
+    return target == base or target.startswith(base + "/")
+
+
+def protected_reason(path: Path) -> str | None:
+    """Почему в эту папку нельзя раскладывать файлы. None — можно."""
+    resolved = _resolve(path)
+
+    if resolved.parent == resolved:
+        return (
+            "Это корень диска. Выберите папку внутри него — "
+            "раскладывать файлы в корне нельзя."
+        )
+
+    target = os.path.normcase(str(resolved))
+    system_drive = _drive_of(Path(os.environ.get("SystemRoot", "C:\\")))
+
+    for var in PROTECTED_ENV_VARS:
+        raw = os.environ.get(var)
+        if not raw:
+            continue
+        try:
+            candidate = os.path.normcase(str(_resolve(Path(raw))))
+        except (OSError, ValueError):
+            continue
+        if candidate and _under(target, candidate):
+            return (
+                f"Это системная папка «{Path(raw).name}» — в ней лежат файлы "
+                "Windows и установленных программ. Выберите свою папку с документами "
+                "или фотографиями."
+            )
+
+    # Имена вроде «Windows» или «Program Files» запрещены только на системном
+    # диске Windows: на Linux папка пользователя с таким именем безобидна.
+    if (
+        os.name == "nt"
+        and resolved.name.lower() in PROTECTED_DIR_NAMES
+        and _drive_of(resolved) == system_drive
+    ):
+        return (
+            f"«{resolved.name}» — системная папка Windows. "
+            "Переименование файлов внутри неё нарушит работу системы."
+        )
+
+    for base in PROTECTED_POSIX_DIRS:
+        if _under(target, base):
+            return (
+                f"Это системный каталог «{base}» — в нём файлы операционной системы "
+                "и установленных программ. Выберите свою папку с документами "
+                "или фотографиями."
+            )
+
+    return None
+
+
+def is_executable(path: Path) -> bool:
+    """Исполняемый файл, который нельзя переименовывать."""
+    return path.suffix.lower() in EXECUTABLE_SUFFIXES
+
+
 def check_folder(path: Path) -> str | None:
     """Валидация выбранной папки. Возвращает текст ошибки или None."""
     if not path.exists():
         return "Такой папки нет."
     if not path.is_dir():
         return "Это файл, а не папка."
+    reason = protected_reason(path)
+    if reason:
+        return reason
     if not os.access(wp(path), os.R_OK):
         return "Нет прав на чтение этой папки."
     if not os.access(wp(path), os.W_OK):

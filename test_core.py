@@ -730,6 +730,92 @@ def test_nested_year_template_validation() -> None:
     check("обратный слэш отклоняется", core.validate_year_folder("{YYYY}\\{MM}") is not None)
 
 
+def test_video_moov_at_end() -> None:
+    print("\n[30] Дата видео, когда moov лежит после большого mdat")
+    import struct
+    from datetime import timezone
+
+    def box(kind: bytes, payload: bytes) -> bytes:
+        return struct.pack(">I", 8 + len(payload)) + kind + payload
+
+    seconds = int((datetime(2020, 2, 8, 6, 55, tzinfo=timezone.utc)
+                   - datetime(1904, 1, 1, tzinfo=timezone.utc)).total_seconds())
+    mvhd = box(b"mvhd", struct.pack(">B3s", 0, b"\0\0\0")
+               + struct.pack(">IIII", seconds, seconds, 1000, 0) + b"\0" * 80)
+    data = (box(b"ftyp", b"mp42\0\0\0\0mp42isom")
+            + box(b"mdat", b"\0" * (5 * 1024 * 1024))
+            + box(b"moov", mvhd))
+    with tempfile.TemporaryDirectory() as tmp:
+        clip = Path(tmp) / "clip.mp4"
+        clip.write_bytes(data)
+        found, label = core.video_date(clip)
+        check("дата 2020 найдена за 4 МБ", found == datetime(2020, 2, 8, 6, 55), str(found))
+        check("источник — метаданные", label == core.SRC_META_CREATED, label)
+
+
+def test_protected_paths() -> None:
+    print("\n[31] Системные папки и исполняемые файлы не раскладываются")
+    import tempfile as _tf
+
+    for bad in ("/etc", "/etc/nginx", "/usr/bin", "/usr/local/lib", "/boot", "/sys", "/proc", "/var/log"):
+        check(f"{bad} запрещён", core.protected_reason(Path(bad)) is not None, str(core.protected_reason(Path(bad))))
+
+    import tempfile as _tf2
+    from pathlib import PureWindowsPath
+    with _tf2.TemporaryDirectory() as tmp:
+        for name in ("Windows", "Program Files"):
+            own = Path(tmp) / name
+            own.mkdir()
+            check(f"папка «{name}» на Linux разрешена", core.check_folder(own) is None)
+
+    import os as _os
+    _saved = {k: _os.environ.get(k) for k in ("SystemRoot", "ProgramFiles", "ProgramData")}
+    _saved_name = core.os.name
+    _saved_resolve = core._resolve
+    try:
+        core.os.name = "nt"
+        _os.environ["SystemRoot"] = "C:\\Windows"
+        _os.environ["ProgramFiles"] = "C:\\Program Files"
+        _os.environ["ProgramData"] = "C:\\ProgramData"
+        core._resolve = lambda p: p
+        for win_path in ("C:\\Windows", "C:\\Windows\\System32", "C:\\Windows\\System32\\drivers",
+                         "C:\\Program Files", "C:\\Program Files\\SomeApp", "C:\\ProgramData", "C:\\", "D:\\"):
+            reason = core.protected_reason(PureWindowsPath(win_path))
+            check(f"{win_path} запрещён", reason is not None, str(reason))
+        for win_path in ("C:\\Users\\Andrew\\Фото", "D:\\Архив", "E:\\Семья\\Фотокамера"):
+            check(f"{win_path} разрешён", core.protected_reason(PureWindowsPath(win_path)) is None)
+    finally:
+        core.os.name = _saved_name
+        core._resolve = _saved_resolve
+        for k, v in _saved.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+    with _tf.TemporaryDirectory() as tmp:
+        own = Path(tmp) / "Мои фото"
+        own.mkdir()
+        check("личная папка разрешена", core.check_folder(own) is None, str(core.check_folder(own)))
+
+    check("exe — исполняемый", core.is_executable(Path("app.exe")))
+    check("DLL в верхнем регистре", core.is_executable(Path("core.DLL")))
+    check("jpg — не исполняемый", not core.is_executable(Path("photo.jpg")))
+    check("zip — не исполняемый", not core.is_executable(Path("archive.zip")))
+
+    with _tf.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "Папка"
+        app = root / "SomeApp"
+        app.mkdir(parents=True)
+        for name in ("app.exe", "core.dll", "photo.jpg"):
+            (app / name).write_bytes(b"x")
+        result = core.plan(root, {**cfg(), "recursive": True})
+        by_name = {i.name: i for i in result.items}
+        check("exe помечен пропущенным", by_name["app.exe"].status == core.SKIPPED, by_name["app.exe"].status)
+        check("dll помечен пропущенным", by_name["core.dll"].status == core.SKIPPED, by_name["core.dll"].status)
+        check("jpg в плане", by_name["photo.jpg"].status == core.RENAME, by_name["photo.jpg"].status)
+        check("к переносу только jpg", len(result.actionable()) == 1, str(len(result.actionable())))
+
+
 def main() -> int:
     print("=" * 60)
     print("Проверка ядра Архивариуса")
@@ -763,6 +849,8 @@ def main() -> int:
     test_rename_keeps_modified_time()
     test_nested_month_folders()
     test_nested_year_template_validation()
+    test_video_moov_at_end()
+    test_protected_paths()
     print("\n" + "=" * 60)
     print(f"Пройдено: {PASSED}   Провалено: {FAILED}")
     print("=" * 60)
