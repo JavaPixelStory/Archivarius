@@ -32,8 +32,23 @@ def exe_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def _fallback_dir() -> Path:
+    """Куда писать, если папка приложения недоступна на запись.
+
+    У каждой системы свой стандартный каталог для данных приложений:
+    искать «AppData» на macOS или Linux неправильно — такого каталога там нет.
+    """
+    if sys.platform == "win32":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    else:
+        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return base / APP_NAME
+
+
 def data_dir() -> Path:
-    """Папка для settings.json / журналов / логов. Портативно, с откатом в LOCALAPPDATA."""
+    """Папка для settings.json / журналов / логов. Портативно, с откатом в системный каталог."""
     base = exe_dir()
     probe = base / ".write_probe"
     try:
@@ -41,7 +56,7 @@ def data_dir() -> Path:
         probe.unlink()
         return base
     except OSError:
-        fallback = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / APP_NAME
+        fallback = _fallback_dir()
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
 

@@ -6,12 +6,23 @@ import random
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import core
+import platforms
 
 PASSED = 0
+
+
+def _as_local(moment: datetime) -> datetime:
+    """UTC-момент в локальном времени — так его показывает приложение.
+
+    Метаданные PDF и OOXML хранят время в UTC. Приложение переводит его
+    в зону пользователя, поэтому тесты не могут ждать фиксированных цифр:
+    в Москве и в Лондоне результат разный.
+    """
+    return moment.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
 FAILED = 0
 JOURNAL = Path(tempfile.mkdtemp(prefix="archivarius_journal_"))
 
@@ -393,12 +404,14 @@ def test_metadata_dates() -> None:
 
         check(
             "PDF: дата из /CreationDate",
-            by_name["договор.pdf"].dt == datetime(2019, 3, 14, 9, 26, 53),
+            by_name["договор.pdf"].dt == _as_local(datetime(2019, 3, 14, 9, 26, 53)),
             str(by_name["договор.pdf"].dt),
         )
+        # dcterms:created хранится в UTC. Приложение переводит его в локальное
+        # время, поэтому ожидание зависит от зоны, в которой идут тесты.
         check(
             "DOCX: дата из dcterms:created",
-            by_name["отчёт.docx"].dt == datetime(2016, 7, 22, 11, 5, 30),
+            by_name["отчёт.docx"].dt == _as_local(datetime(2016, 7, 22, 11, 5, 30)),
             str(by_name["отчёт.docx"].dt),
         )
         check(
@@ -452,18 +465,24 @@ def test_already_misnamed_can_be_fixed() -> None:
         core.execute(root, plan_result, cfg_meta(recursive=True), JOURNAL)
         fixed = list(root.rglob("*.pdf"))
         check("лежит в папке 2019", fixed[0].parent.name == "2019", fixed[0].parent.name)
-        check("имя по метаданным", fixed[0].name == "2019-03-14_09-26-53.pdf", fixed[0].name)
+        expected_name = _as_local(datetime(2019, 3, 14, 9, 26, 53)).strftime("%Y-%m-%d_%H-%M-%S") + ".pdf"
+        check("имя по метаданным", fixed[0].name == expected_name, fixed[0].name)
 
 
 def test_pdf_timezone() -> None:
     print("\n[21] Часовой пояс в дате PDF учитывается")
     parsed = core._from_date_field("D:20190314092653Z")
-    check("UTC разобран", parsed == datetime(2019, 3, 14, 9, 26, 53), str(parsed))
-    local = datetime.now().astimezone().utcoffset() or timedelta(0)
+    check("UTC разобран", parsed == _as_local(datetime(2019, 3, 14, 9, 26, 53)), str(parsed))
+    # Смещение берём на саму дату, а не «сейчас»: в зонах с летним временем
+    # (например, Нью-Йорк) зимой -5, а 14 марта уже -4. Раньше тест считал
+    # по текущему моменту и падал, если между датой файла и запуском
+    # тестов случался переход на летнее время.
+    moment = datetime(2019, 3, 14, 9, 26, 53)
+    local = moment.astimezone().utcoffset() or timedelta(0)
     offset = core._from_date_field("D:20190314092653+03'00'")
     check(
         "смещение переведено в локальное время",
-        offset == datetime(2019, 3, 14, 9, 26, 53) - timedelta(hours=3) + local,
+        offset == moment - timedelta(hours=3) + local,
         str(offset),
     )
 
@@ -512,7 +531,11 @@ def test_earliest_date_wins() -> None:
         os.utime(root / "report.docx", (datetime(2022, 5, 5).timestamp(),) * 2)
         plan_result = core.plan(root, cfg_meta())
         item = [i for i in plan_result.items if i.name == "report.docx"][0]
-        check("метаданные старше mtime", item.dt == datetime(2016, 7, 22, 11, 5, 30), str(item.dt))
+        check(
+            "метаданные старше mtime",
+            item.dt == _as_local(datetime(2016, 7, 22, 11, 5, 30)),
+            str(item.dt),
+        )
 
 
 def test_collect_dates_returns_all() -> None:
@@ -524,7 +547,9 @@ def test_collect_dates_returns_all() -> None:
         dates = core.collect_dates(path, os.stat(path), cfg_meta())
         labels = {label for _, label in dates}
         check("есть mtime", core.SRC_MTIME in labels, str(labels))
-        check("есть ctime", core.SRC_CTIME in labels, str(labels))
+        if platforms.WINDOWS:
+            # Только на NTFS ctime — дата создания, он обязан быть в списке.
+            check("есть ctime", core.SRC_CTIME in labels, str(labels))
         check("выбран минимум", min(dates, key=lambda d: d[0])[0] == datetime(2015, 5, 5), str(dates))
 
 
@@ -797,8 +822,9 @@ def test_protected_paths() -> None:
         own.mkdir()
         check("личная папка разрешена", core.check_folder(own) is None, str(core.check_folder(own)))
 
-    check("exe — исполняемый", core.is_executable(Path("app.exe")))
-    check("DLL в верхнем регистре", core.is_executable(Path("core.DLL")))
+    if platforms.WINDOWS:
+        check("exe — исполняемый", core.is_executable(Path("app.exe")))
+        check("DLL в верхнем регистре", core.is_executable(Path("core.DLL")))
     check("jpg — не исполняемый", not core.is_executable(Path("photo.jpg")))
     check("zip — не исполняемый", not core.is_executable(Path("archive.zip")))
 
@@ -810,10 +836,12 @@ def test_protected_paths() -> None:
             (app / name).write_bytes(b"x")
         result = core.plan(root, {**cfg(), "recursive": True})
         by_name = {i.name: i for i in result.items}
-        check("exe помечен пропущенным", by_name["app.exe"].status == core.SKIPPED, by_name["app.exe"].status)
-        check("dll помечен пропущенным", by_name["core.dll"].status == core.SKIPPED, by_name["core.dll"].status)
+        if platforms.WINDOWS:
+            check("exe помечен пропущенным", by_name["app.exe"].status == core.SKIPPED, by_name["app.exe"].status)
+            check("dll помечен пропущенным", by_name["core.dll"].status == core.SKIPPED, by_name["core.dll"].status)
         check("jpg в плане", by_name["photo.jpg"].status == core.RENAME, by_name["photo.jpg"].status)
-        check("к переносу только jpg", len(result.actionable()) == 1, str(len(result.actionable())))
+        expected = 1 if platforms.WINDOWS else 3  # на POSIX .exe/.dll — обычные файлы
+        check("к переносу только jpg", len(result.actionable()) == expected, str(len(result.actionable())))
 
 
 def main() -> int:

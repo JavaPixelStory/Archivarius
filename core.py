@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+import platforms
+
 # --- статусы -----------------------------------------------------------------
 
 RENAME = "rename"
@@ -288,7 +290,12 @@ def _from_date_field(value) -> datetime | None:
                 except ValueError:
                     continue
                 offset = body[size:]
-                if offset.startswith(("+", "-")) and len(offset) >= 5:
+                if offset.startswith("Z"):
+                    # «Z» в PDF означает UTC — тот же момент, что «+00:00».
+                    # Раньше эта ветка его не замечала и возвращала время как есть,
+                    # поэтому одна и та же дата из PDF и из ISO давала разное время.
+                    parsed = parsed.replace(tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
+                elif offset.startswith(("+", "-")) and len(offset) >= 5:
                     sign = 1 if offset[0] == "+" else -1
                     try:
                         zone = timezone(
@@ -562,7 +569,11 @@ def collect_dates(path: Path, stat_result: os.stat_result, cfg: dict) -> list[tu
         add(date_from_name(path.stem), SRC_FILENAME)
 
     add(_from_timestamp(stat_result.st_mtime), SRC_MTIME)
-    add(_from_timestamp(stat_result.st_ctime), SRC_CTIME)
+    # Не st_ctime напрямую: на Linux и macOS это время смены прав, а не
+    # создания. platforms.creation_time вернёт None, если система не хранит дату.
+    birth = platforms.creation_time(stat_result)
+    if birth is not None:
+        add(_from_timestamp(birth), SRC_CTIME)
     return found
 
 
@@ -817,7 +828,10 @@ def _folder_listing(folder: Path, existing: dict[str, set[str]]) -> set[str]:
     cached = existing.get(key)
     if cached is None:
         try:
-            cached = {name.lower() for name in os.listdir(wp(folder))}
+            cached = {
+                platforms.normalize_name(name).lower()
+                for name in os.listdir(wp(folder))
+            }
         except OSError:
             cached = set()
         existing[key] = cached
@@ -842,7 +856,9 @@ def _dedupe(
     candidate = name
     attempt = next_attempt.get(prefix + name, 2)
     while True:
-        low = candidate.lower()
+        # NFC обязателен: APFS на macOS отдаёт имена в NFD, и «й» из двух
+        # символов не должен считаться свободным именем при занятом «й».
+        low = platforms.normalize_name(candidate).lower()
         if low not in listing and (prefix + low) not in taken:
             taken.add(prefix + low)
             listing.add(low)
@@ -1148,68 +1164,20 @@ PROTECTED_ENV_VARS = (
     "CommonProgramFiles(x86)",
 )
 
-# Имена папок, которые запрещены на системном диске.
-PROTECTED_DIR_NAMES = {
-    "windows",
-    "program files",
-    "program files (x86)",
-    "programdata",
-    "system32",
-    "syswow64",
-    "winsxs",
-    "recovery",
-    "perflogs",
-    "$recycle.bin",
-    "system volume information",
-}
+# Имена папок, которые запрещены на системном диске Windows.
+PROTECTED_DIR_NAMES = platforms.system_dir_names()
 
-# Каталоги POSIX: тот же смысл для Linux и macOS.
-PROTECTED_POSIX_DIRS = (
-    "/etc",
-    "/usr",
-    "/bin",
-    "/sbin",
-    "/boot",
-    "/lib",
-    "/lib32",
-    "/lib64",
-    "/var",
-    "/opt",
-    "/sys",
-    "/proc",
-    "/dev",
-    "/run",
-    "/snap",
-    "/srv",
-    "/root",
-    "/System",
-    "/Library",
-    "/Applications",
-    "/private",
-    "/cores",
-)
+# Каталоги POSIX: тот же смысл для Linux и macOS. Список живёт в platforms.py.
+PROTECTED_POSIX_DIRS = platforms.posix_system_dirs()
+
+# Временные каталоги пользователя: лежат внутри /var (и /private/var на macOS),
+# но системными не являются — там можно спокойно раскладывать файлы.
+POSIX_USER_TEMP_DIRS = ("/var/folders", "/private/var/folders", "/tmp", "/private/tmp")
 
 # Исполняемые файлы: переименование ломает программы и ярлыки.
-EXECUTABLE_SUFFIXES = {
-    ".exe",
-    ".dll",
-    ".sys",
-    ".msi",
-    ".msix",
-    ".msp",
-    ".com",
-    ".scr",
-    ".cpl",
-    ".ocx",
-    ".drv",
-    ".lnk",
-    ".bat",
-    ".cmd",
-    ".ps1",
-    ".vbs",
-    ".jar",
-    ".appx",
-}
+# Набор зависит от системы: на Windows это .exe/.dll, на POSIX — скрипты,
+# байткод и пакеты. Переименование ломает и то, и другое.
+EXECUTABLE_SUFFIXES = platforms.executable_suffixes()
 
 
 def _resolve(path: Path) -> Path:
@@ -1280,6 +1248,12 @@ def protected_reason(path: Path) -> str | None:
 
     for base in PROTECTED_POSIX_DIRS:
         if _under(target, base):
+            # Исключение: на macOS /tmp и /var/folders — это временная папка
+            # пользователя. Система отдаёт её как /private/var/folders/...,
+            # а /private и /var в списке защищённых. Без исключения любая
+            # временная папка считалась бы системной.
+            if any(_under(target, safe) for safe in POSIX_USER_TEMP_DIRS):
+                continue
             return (
                 f"Это системный каталог «{base}» — в нём файлы операционной системы "
                 "и установленных программ. Выберите свою папку с документами "
@@ -1290,8 +1264,15 @@ def protected_reason(path: Path) -> str | None:
 
 
 def is_executable(path: Path) -> bool:
-    """Исполняемый файл, который нельзя переименовывать."""
-    return path.suffix.lower() in EXECUTABLE_SUFFIXES
+    """Исполняемый файл, который нельзя переименовывать.
+
+    На Windows исполняемость задаётся расширением, на POSIX — битом прав.
+    Проверяем оба признака: файл без расширения с chmod +x тоже ломается
+    от переименования.
+    """
+    if path.suffix.lower() in EXECUTABLE_SUFFIXES:
+        return True
+    return platforms.has_execute_bit(path, wp)
 
 
 def check_folder(path: Path) -> str | None:

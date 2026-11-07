@@ -38,6 +38,7 @@ DISABLED_TEXT = "#EFE6D2"
 RADIUS_BIG = 30  # крупные кнопки (высота 46 px и больше)
 RADIUS_SMALL = 20  # мелкие кнопки и чипы фильтров
 RADIUS_FIELD = 20  # поля ввода
+RADIUS_MENU = 8  # выпадающий список: меньше полей, чтобы не выглядел капсулой
 RADIUS_ZONE = 20  # зона перетаскивания
 RADIUS_ZONE_BACK = 40  # зона перетаскивания бэкграунд
 
@@ -157,12 +158,16 @@ def toggle_image(kind: str, checked: bool, size: int = 24) -> tk.PhotoImage | No
         else:
             pad = int(s * 0.08)
             if checked:
+                # Полностью закрашенный круг. Раньше поверх него рисовался
+                # белый радиусом 30% — получалось толстое кольцо, а не точка.
                 d.ellipse((pad, pad, s - pad, s - pad), fill=GREEN)
-                inner = int(s * 0.30)
-                c = s // 2
-                d.ellipse((c - inner, c - inner, c + inner, c + inner), fill=WHITE)
             else:
-                d.ellipse((pad, pad, s - pad, s - pad), outline="#8FA88F", width=stroke)
+                d.ellipse(
+                    (pad, pad, s - pad, s - pad),
+                    fill=WHITE,
+                    outline="#8FA88F",
+                    width=stroke,
+                )
 
         img = img.resize((size, size), Image.LANCZOS)
         photo = ImageTk.PhotoImage(img)
@@ -803,7 +808,11 @@ class RoundedSelect(tk.Frame):
         self.canvas.configure(cursor="hand2")
         self.canvas.bind("<Button-1>", lambda _e: self._open_menu())
 
-        self._popup: tk.Toplevel | None = None
+        # Список живёт внутри главного окна, а не в отдельном Toplevel:
+        # на macOS система сама скругляет безрамочные окна.
+        self._menu: tk.Frame | None = None
+        self._bind_outside = None
+        self._bind_escape = None
 
         self._draw()
 
@@ -847,57 +856,126 @@ class RoundedSelect(tk.Frame):
 
     # --- меню --------------------------------------------------------
     def _open_menu(self) -> None:
+        """Раскрывает список внутри главного окна.
+
+        Раньше это был отдельный Toplevel без рамки. На macOS система
+        скругляет такие окна сама, своим радиусом: при высоте 32 px
+        (один пункт) список превращался в капсулу. Внутри окна форму
+        задаём мы, и на всех системах она одинаковая.
+        """
         if not self._values:
             return
         self._close_menu()
-        popup = tk.Toplevel(self)
-        popup.overrideredirect(True)
-        popup.configure(bg=LINE_SOFT)
-        x = self.winfo_rootx()
-        y = self.winfo_rooty() + self.winfo_height() + 2
-        rows = min(len(self._values), 8)
-        popup.geometry(f"{self._bw}x{rows * 30 + 2}+{x}+{y}")
 
-        box = tk.Listbox(
-            popup,
-            bd=0,
+        row_h = 30
+        parent = self.master
+        below = parent.winfo_height() - (self.winfo_y() + self._bh + 2)
+        above = self.winfo_y() - 2
+
+        # Открываем вниз, если места хватает; иначе вверх, где его больше.
+        if below >= row_h or below >= above:
+            rows = max(1, min(len(self._values), 8, below // row_h))
+            height = rows * row_h + 2
+            y = self.winfo_y() + self._bh + 2
+        else:
+            rows = max(1, min(len(self._values), 8, above // row_h))
+            height = rows * row_h + 2
+            y = self.winfo_y() - height - 2
+
+        # Фон берём у самого виджета: BG — константа из ui.py, здесь её нет.
+        surface = self.cget("bg")
+        holder = tk.Frame(parent, bg=surface)
+        canvas = tk.Canvas(
+            holder,
+            width=self._bw,
+            height=height,
+            bg=surface,
             highlightthickness=0,
-            relief="flat",
-            activestyle="none",
-            exportselection=False,
-            bg=WHITE,
-            fg=INK,
-            selectbackground=GREEN_SOFT,
-            selectforeground=GREEN,
-            font=self._font,
+            bd=0,
         )
-        box.pack(fill="both", expand=True, padx=1, pady=1)
-        for value in self._values:
-            box.insert("end", self._truncate(value, self._bw - 32))
-        box.bind(
-            "<ButtonRelease-1>",
-            lambda _e: self._pick_index(
-                box.nearest(box.winfo_pointery() - box.winfo_rooty())
-            ),
+        canvas.pack()
+        round_rect(
+            canvas,
+            1,
+            1,
+            self._bw - 1,
+            height - 1,
+            RADIUS_MENU,
+            fill=WHITE,
+            outline=LINE_SOFT,
+            width=1,
         )
-        box.bind("<Return>", lambda _e: self._pick_index(box.index("active")))
-        box.bind("<Escape>", lambda _e: self._close_menu())
 
-        popup.bind(
-            "<FocusOut>", lambda _e: self.after(50, self._close_menu_if_unfocused)
-        )
-        self._popup = popup
-        popup.focus_force()
-        box.focus_set()
+        row_bg = []
+        for index, value in enumerate(self._values[:rows]):
+            top = 1 + index * row_h
+            row_bg.append(
+                canvas.create_rectangle(
+                    5,
+                    top + 1,
+                    self._bw - 5,
+                    top + row_h - 1,
+                    fill=WHITE,
+                    outline="",
+                )
+            )
+            canvas.create_text(
+                14,
+                top + row_h / 2 + 1,
+                text=self._truncate(value, self._bw - 28),
+                anchor="w",
+                fill=INK,
+                font=self._font,
+            )
+            if index:
+                canvas.create_line(10, top, self._bw - 10, top, fill=LINE_SOFT)
 
-    def _close_menu_if_unfocused(self) -> None:
-        if self._popup is not None and self._popup.focus_get() is None:
-            self._close_menu()
+        def on_click(event: tk.Event) -> None:
+            self._pick_index(int((event.y - 1) // row_h))
+
+        def on_motion(event: tk.Event) -> None:
+            hover = int((event.y - 1) // row_h)
+            for i, rect in enumerate(row_bg):
+                canvas.itemconfigure(rect, fill=GREEN_SOFT if i == hover else WHITE)
+
+        canvas.bind("<Button-1>", on_click)
+        canvas.bind("<Motion>", on_motion)
+        canvas.configure(cursor="hand2")
+
+        holder.place(x=self.winfo_x(), y=y, width=self._bw, height=height)
+        holder.lift()
+
+        self._menu = holder
+        toplevel = self.winfo_toplevel()
+        self._bind_outside = toplevel.bind(
+            "<Button-1>", self._on_outside_click, add="+"
+        )
+        self._bind_escape = toplevel.bind(
+            "<Escape>", lambda _e: self._close_menu(), add="+"
+        )
+
+    def _on_outside_click(self, event: tk.Event) -> None:
+        """Закрывает список по щелчку мимо него."""
+        if self._menu is None:
+            return
+        widget = event.widget
+        while widget is not None:
+            if widget is self._menu or widget is self.canvas:
+                return
+            widget = getattr(widget, "master", None)
+        self._close_menu()
 
     def _close_menu(self) -> None:
-        if self._popup is not None:
-            self._popup.destroy()
-            self._popup = None
+        if self._menu is not None:
+            self._menu.destroy()
+            self._menu = None
+        toplevel = self.winfo_toplevel()
+        if self._bind_outside is not None:
+            toplevel.unbind("<Button-1>", self._bind_outside)
+            self._bind_outside = None
+        if self._bind_escape is not None:
+            toplevel.unbind("<Escape>", self._bind_escape)
+            self._bind_escape = None
 
     def _pick_index(self, index: int) -> None:
         if 0 <= index < len(self._values):
@@ -1039,8 +1117,16 @@ class RadioDot(tk.Canvas):
         if photo is not None:
             self.create_image(2, cy, image=photo, anchor="w")
         else:
+            # Запасной путь без Pillow: заливаем в отмеченном состоянии,
+            # иначе точка выглядела как пустой контур.
             self.create_oval(
-                2, cy - 10, 22, cy + 10, fill=WHITE, outline="#8FA88F", width=2
+                2,
+                cy - 10,
+                22,
+                cy + 10,
+                fill=GREEN if selected else WHITE,
+                outline=GREEN if selected else "#8FA88F",
+                width=2,
             )
         self.create_text(
             size + 12,
