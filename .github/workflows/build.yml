@@ -1,0 +1,65 @@
+name: Сборка
+
+# Собирает программу на трёх системах параллельно: каждая сборка идёт
+# на своей машине, потому что PyInstaller не умеет собирать под чужую ОС.
+#
+# Запуск: вручную (Actions → Сборка → Run workflow)
+#         или автоматически при публикации тега вида v1.4.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux — системные пакеты для Tk
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
+
+      - name: Тесты ядра
+        run: python -B test_core.py
+
+      - name: Сборка
+        run: python build.py
+
+      - name: Загрузить архив
+        uses: actions/upload-artifact@v4
+        with:
+          name: Archivarius-${{ runner.os }}
+          path: dist/Archivarius-*
+          if-no-files-found: error
+
+  release:
+    # Публикуем релиз только при выпуске тега, вручную — нет.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Публикация релиза
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
