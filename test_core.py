@@ -791,16 +791,38 @@ def test_protected_paths() -> None:
     print("\n[31] Системные папки и исполняемые файлы не раскладываются")
     import tempfile as _tf
 
-    for bad in ("/etc", "/etc/nginx", "/usr/bin", "/usr/local/lib", "/boot", "/sys", "/proc", "/var/log"):
-        check(f"{bad} запрещён", core.protected_reason(Path(bad)) is not None, str(core.protected_reason(Path(bad))))
+    # POSIX-пути проверяем только на POSIX. На Windows «/etc» — это \etc
+    # в корне текущего диска, то есть обычная папка, а не системный каталог:
+    # защищать там нечего, и требовать запрета бессмысленно.
+    if not platforms.WINDOWS:
+        for bad in (
+            "/etc",
+            "/etc/nginx",
+            "/usr/bin",
+            "/usr/local/lib",
+            "/boot",
+            "/sys",
+            "/proc",
+            "/var/log",
+        ):
+            check(
+                f"{bad} запрещён",
+                core.protected_reason(Path(bad)) is not None,
+                str(core.protected_reason(Path(bad))),
+            )
 
     import tempfile as _tf2
     from pathlib import PureWindowsPath
-    with _tf2.TemporaryDirectory() as tmp:
-        for name in ("Windows", "Program Files"):
-            own = Path(tmp) / name
-            own.mkdir()
-            check(f"папка «{name}» на Linux разрешена", core.check_folder(own) is None)
+
+    if not platforms.WINDOWS:
+        # Обратная проверка: на Windows папка с именем «Windows» на системном
+        # диске защищена по-настоящему, поэтому «разрешена» верно только
+        # для остальных систем.
+        with _tf2.TemporaryDirectory() as tmp:
+            for name in ("Windows", "Program Files"):
+                own = Path(tmp) / name
+                own.mkdir()
+                check(f"папка «{name}» на Linux разрешена", core.check_folder(own) is None)
 
     import os as _os
     _saved = {k: _os.environ.get(k) for k in ("SystemRoot", "ProgramFiles", "ProgramData")}
