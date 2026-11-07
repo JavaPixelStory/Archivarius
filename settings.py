@@ -63,10 +63,21 @@ def data_dir() -> Path:
 
 def assets_dir() -> Path:
     """assets рядом с exe; при onefile-сборке дополнительно смотрим во временную распаковку."""
-    candidates = [exe_dir() / "assets"]
+    base = exe_dir()
+    candidates = [base / "assets"]
+
+    # Внутри macOS-бандла бинарник лежит в Contents/MacOS, а ресурсы —
+    # в Contents/Resources. Без этого варианта .app запускался без шрифтов
+    # и иконок: в Contents/MacOS/assets их никто не кладёт.
+    # platforms не импортируем: settings подключается раньше и не должен
+    # тянуть лишние зависимости. Проверки платформы хватает и здесь.
+    if sys.platform == "darwin":
+        candidates.append(base.parent / "Resources" / "assets")
+
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
         candidates.append(Path(meipass) / "assets")
+
     for path in candidates:
         if path.is_dir():
             return path

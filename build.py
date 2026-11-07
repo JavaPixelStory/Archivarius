@@ -134,17 +134,35 @@ def build_app() -> Path:
     return DIST / NAME
 
 
-def copy_assets() -> None:
-    """assets/ кладём рядом с результатом: программа ищет их там."""
+def copy_assets(artifact: Path | None = None) -> None:
+    """assets/ кладём туда, где программа их ищет.
+
+    Windows и Linux — рядом с исполняемым файлом.
+    macOS — внутрь .app, в Contents/MacOS рядом с бинарником: снаружи
+    пакета программа их не найдёт, потому что sys.executable указывает
+    внутрь бандла, а не в dist/.
+    """
     source = ROOT / "assets"
-    target = DIST / "assets"
     if not source.is_dir():
         say("  папки assets нет — пропускаю")
         return
+
+    if MACOS and artifact is not None and artifact.is_dir():
+        # Contents/Resources — штатное место ресурсов в macOS-бандле.
+        # Именно туда смотрит Finder за иконкой и туда же кладут данные,
+        # чтобы они не мешали подписи бинарника в Contents/MacOS.
+        target = artifact / "Contents" / "Resources" / "assets"
+    else:
+        target = DIST / "assets"
+
     if target.exists():
         shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(source, target)
-    say(f"  скопировано в {target.relative_to(ROOT)}/")
+    try:
+        shown = target.relative_to(ROOT)
+    except ValueError:
+        shown = target
+    say(f"  скопировано в {shown}/")
 
 
 def package(artifact: Path, version: str) -> Path:
@@ -217,7 +235,7 @@ def main() -> int:
     artifact = build_app()
 
     step(5, 5, "Кладу assets и упаковываю")
-    copy_assets()
+    copy_assets(artifact)
     archive = package(artifact, version)
 
     report(artifact, archive)
