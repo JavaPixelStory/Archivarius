@@ -2,9 +2,18 @@
 from __future__ import annotations
 
 import os
+import sys
+
+# На Windows консоль по умолчанию в cp1252, и первый же print с кириллицей
+# падает с UnicodeEncodeError. Переключаем вывод на UTF-8 заранее, чтобы
+# тесты работали и без переменных окружения в CI.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 import random
 import shutil
-import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path

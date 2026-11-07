@@ -4,7 +4,7 @@ name: Сборка
 # на своей машине, потому что PyInstaller не умеет собирать под чужую ОС.
 #
 # Запуск: вручную (Actions → Сборка → Run workflow)
-#         или автоматически при публикации тега вида v1.4.
+#         или автоматически при публикации тега вида v2.0.
 
 on:
   workflow_dispatch:
@@ -23,6 +23,13 @@ jobs:
         os: [windows-latest, ubuntu-22.04, macos-latest]
     runs-on: ${{ matrix.os }}
 
+    # На Windows стандартный вывод — cp1252, и любой print с кириллицей
+    # падает с UnicodeEncodeError. Эти две переменные переводят Python
+    # в режим UTF-8 независимо от локали системы.
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,6 +40,14 @@ jobs:
       - name: Linux — системные пакеты для Tk
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y python3-tk xvfb
+
+      # Тесты создают JPEG/PDF/DOCX на лету, поэтому Pillow нужен им,
+      # а не только сборке. Раньше зависимости ставил build.py — уже после
+      # тестов, и на macOS/Linux они падали с ModuleNotFoundError: PIL.
+      - name: Зависимости
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet -r requirements.txt
 
       - name: Тесты ядра
         run: python -B test_core.py
