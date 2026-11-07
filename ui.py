@@ -448,10 +448,27 @@ class App(BaseClass):
 
     def show(self, name: str) -> None:
         self._stop_animation()
-        for frame in self.screens.values():
-            frame.place_forget()
-        self.screens[name].place(x=0, y=0, width=WINDOW_W, height=WINDOW_H)
+        target = self.screens[name]
+
+        # Порядок важен: сначала показываем новый экран, и только потом
+        # скрываем остальные. Если сделать наоборот, окно на мгновение
+        # остаётся без единого видимого дочернего виджета, и macOS не
+        # перерисовывает этот регион — он висит чёрным до следующего
+        # события мыши или окна. На Linux и Windows такого не видно:
+        # там фон окна закрашивается сразу.
+        target.place(x=0, y=0, width=WINDOW_W, height=WINDOW_H)
+        target.lift()
+        for other in self.screens.values():
+            if other is not target:
+                other.place_forget()
+
         self.current = name
+
+        # Заставляем Tk обработать перерисовку немедленно, не дожидаясь
+        # следующего события. update_idletasks() трогает только отложенные
+        # задачи отрисовки и не запускает обработчики ввода, поэтому
+        # безопасен внутри обработчика кнопки.
+        self.update_idletasks()
 
     def _label(
         self,
