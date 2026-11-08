@@ -16,15 +16,15 @@
 
 Главное — **кроссплатформенность**. До 2.0 приложение собиралось только под Windows.
 
-| Было (1.4) | Стало (2.0) |
-| --- | --- |
-| Сборка только `.exe` | `.exe`, бинарник Linux, `.app` для macOS |
-| `os.name` / `sys.platform` по всему коду | Всё в одном файле `platforms.py` |
-| `st_ctime` как дата создания везде | `st_birthtime` на macOS, честный `None` на Linux |
-| Имена без нормализации | NFC имена — корректная работа с «й», «ё» на APFS |
-| Откат данных в `%LOCALAPPDATA%` | Стандартный каталог каждой ОС |
-| Сборка вручную через `build.bat` | `python build.py` + CI на три системы |
-| Выпадающий список — отдельное окно | Список внутри окна: на macOS не превращается в капсулу |
+| Было (1.4)                               | Стало (2.0)                                            |
+| ---------------------------------------- | ------------------------------------------------------ |
+| Сборка только `.exe`                     | `.exe`, бинарник Linux, `.app` для macOS               |
+| `os.name` / `sys.platform` по всему коду | Всё в одном файле `platforms.py`                       |
+| `st_ctime` как дата создания везде       | `st_birthtime` на macOS, честный `None` на Linux       |
+| Имена без нормализации                   | NFC имена — корректная работа с «й», «ё» на APFS       |
+| Откат данных в `%LOCALAPPDATA%`          | Стандартный каталог каждой ОС                          |
+| Сборка вручную через `build.bat`         | `python build.py` + CI на три системы                  |
+| Выпадающий список — отдельное окно       | Список внутри окна: на macOS не превращается в капсулу |
 
 ---
 
@@ -65,11 +65,11 @@
 Готовые сборки — на странице [**Releases**](https://github.com/JavaPixelStory/Archivarius/releases).
 Скачайте ту, что подходит вашей системе.
 
-| Ваша система                      | Файл                              | Что внутри                    |
-| --------------------------------- | --------------------------------- | ----------------------------- |
-| **Windows 10 / 11**               | `Archivarius-2.0-windows.zip`     | `Archivarius.exe` + `assets/` |
-| **Linux** (x86-64)                | `Archivarius-2.0-linux.tar.gz`    | `Archivarius` + `assets/`     |
-| **macOS** (Intel / Apple Silicon) | `Archivarius-2.0-macos.zip`       | `Archivarius.app`             |
+| Ваша система                      | Файл                           | Что внутри                    |
+| --------------------------------- | ------------------------------ | ----------------------------- |
+| **Windows 10 / 11**               | `Archivarius-2.0-windows.zip`  | `Archivarius.exe` + `assets/` |
+| **Linux** (x86-64)                | `Archivarius-2.0-linux.tar.gz` | `Archivarius` + `assets/`     |
+| **macOS** (Intel / Apple Silicon) | `Archivarius-2.0-macos.zip`    | `Archivarius.app`             |
 
 ### 🪟 Windows
 
@@ -119,11 +119,11 @@ sudo pacman -S tk                  # Arch
 **Первый запуск.** Приложение не подписано сертификатом Apple, поэтому macOS его заблокирует.
 Три способа открыть:
 
-| Способ                    | Как                                                                                     |
-| ------------------------- | --------------------------------------------------------------------------------------- |
-| **Правый клик** (проще)   | Правый клик по `Archivarius.app` → **«Открыть»** → в диалоге снова **«Открыть»**         |
-| Терминал                  | `xattr -cr /Applications/Archivarius.app` — снимает карантин, дальше обычный запуск      |
-| Настройки                 | **Системные настройки** → **Конфиденциальность и безопасность** → **«Всё равно открыть»** |
+| Способ                   | Как                                                                                       |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| **Правый клик** (проще)  | Правый клик по `Archivarius.app` → **«Открыть»** → в диалоге снова **«Открыть»**          |
+| Терминал (рекомендуется) | `xattr -cr /Applications/Archivarius.app` — снимает карантин, дальше обычный запуск       |
+| Настройки                | **Системные настройки** → **Конфиденциальность и безопасность** → **«Всё равно открыть»** |
 
 > [!IMPORTANT]
 > После первого успешного запуска повторять не нужно — macOS запоминает выбор.
@@ -139,14 +139,14 @@ sudo pacman -S tk                  # Arch
 
 ## 🖥️ Системные требования
 
-|                             | Минимум                              | Рекомендуется   |
-| --------------------------- | ------------------------------------ | --------------- |
-| **Windows**                 | Windows 10                           | Windows 10 / 11 |
-| **Linux**                   | x86-64, glibc 2.31+ (Ubuntu 20.04+)  | Ubuntu 22.04+   |
-| **macOS**                   | macOS 11 Big Sur                     | macOS 12+       |
-| **Python** (для разработки) | 3.11                                 | 3.12            |
-| **Экран**                   | 900 × 620                            | 1280 × 720      |
-| **Интернет**                | не нужен                             | —               |
+|                             | Минимум                             | Рекомендуется   |
+| --------------------------- | ----------------------------------- | --------------- |
+| **Windows**                 | Windows 10                          | Windows 10 / 11 |
+| **Linux**                   | x86-64, glibc 2.31+ (Ubuntu 20.04+) | Ubuntu 22.04+   |
+| **macOS**                   | macOS 11 Big Sur                    | macOS 12+       |
+| **Python** (для разработки) | 3.11                                | 3.12            |
+| **Экран**                   | 900 × 620                           | 1280 × 720      |
+| **Интернет**                | не нужен                            | —               |
 
 > [!WARNING]
 > Окно **не растягивается** — вёрстка рассчитана ровно на 900 × 620. На экранах меньше
@@ -161,28 +161,28 @@ sudo pacman -S tk                  # Arch
 
 ### Что различается и как решено
 
-| Задача                  | Windows             | Linux                        | macOS                     | Где решено                       |
-| ----------------------- | ------------------- | ---------------------------- | ------------------------- | -------------------------------- |
-| Открыть папку           | `os.startfile`      | `xdg-open`                   | `open`                    | `platforms.open_in_file_manager` |
-| Шрифт Roboto            | `AddFontResourceExW`| `~/.local/share/fonts`       | `~/Library/Fonts`         | `fonts.py`                       |
-| Дата создания файла     | `st_ctime`          | нет — `None`                 | `st_birthtime`            | `platforms.creation_time`        |
-| Имена файлов            | NFC                 | NFC                          | NFD → NFC                 | `platforms.normalize_name`       |
-| Исполняемые файлы       | по расширению       | по биту `+x`                 | по биту `+x`              | `platforms.executable_suffixes`  |
-| Системные папки         | `Windows`, `Program Files` | `/usr`, `/etc`        | `/System`, `/Library`     | `platforms.system_dir_names`     |
-| Уменьшить анимацию      | `SystemParametersInfo` | `gsettings`               | `defaults read`           | `platforms.reduce_motion`        |
-| Каталог данных          | `%LOCALAPPDATA%`    | `~/.local/share`             | `~/Library/Application Support` | `settings._fallback_dir`   |
-| Иконка сборки           | `.ico`              | не встраивается              | `.icns`                   | `build.py`                       |
-| Формат архива           | `.zip`              | `.tar.gz` (хранит `+x`)      | `.zip` (папка `.app`)     | `build.py`                       |
+| Задача              | Windows                    | Linux                   | macOS                           | Где решено                       |
+| ------------------- | -------------------------- | ----------------------- | ------------------------------- | -------------------------------- |
+| Открыть папку       | `os.startfile`             | `xdg-open`              | `open`                          | `platforms.open_in_file_manager` |
+| Шрифт Roboto        | `AddFontResourceExW`       | `~/.local/share/fonts`  | `~/Library/Fonts`               | `fonts.py`                       |
+| Дата создания файла | `st_ctime`                 | нет — `None`            | `st_birthtime`                  | `platforms.creation_time`        |
+| Имена файлов        | NFC                        | NFC                     | NFD → NFC                       | `platforms.normalize_name`       |
+| Исполняемые файлы   | по расширению              | по биту `+x`            | по биту `+x`                    | `platforms.executable_suffixes`  |
+| Системные папки     | `Windows`, `Program Files` | `/usr`, `/etc`          | `/System`, `/Library`           | `platforms.system_dir_names`     |
+| Уменьшить анимацию  | `SystemParametersInfo`     | `gsettings`             | `defaults read`                 | `platforms.reduce_motion`        |
+| Каталог данных      | `%LOCALAPPDATA%`           | `~/.local/share`        | `~/Library/Application Support` | `settings._fallback_dir`         |
+| Иконка сборки       | `.ico`                     | не встраивается         | `.icns`                         | `build.py`                       |
+| Формат архива       | `.zip`                     | `.tar.gz` (хранит `+x`) | `.zip` (папка `.app`)           | `build.py`                       |
 
 ### Главная тонкость: дата создания
 
 `st_ctime` в Python означает **разное в разных системах**:
 
-| Система         | Что такое `st_ctime`                        | Что использовать |
-| --------------- | ------------------------------------------- | ---------------- |
-| Windows (NTFS)  | время создания файла                        | `st_ctime`       |
-| Linux           | время смены прав/владельца, **не создания** | ничего → `None`  |
-| macOS           | то же, что Linux                            | `st_birthtime`   |
+| Система        | Что такое `st_ctime`                        | Что использовать |
+| -------------- | ------------------------------------------- | ---------------- |
+| Windows (NTFS) | время создания файла                        | `st_ctime`       |
+| Linux          | время смены прав/владельца, **не создания** | ничего → `None`  |
+| macOS          | то же, что Linux                            | `st_birthtime`   |
 
 Если бы код брал `st_ctime` везде, то на macOS фотография, скачанная сегодня из архива
 2012 года, получила бы сегодняшнюю дату и уехала в папку 2026. Поэтому
@@ -195,11 +195,11 @@ sudo pacman -S tk                  # Arch
 Если папка недоступна на запись (например, `/Applications` без прав), откат идёт
 в стандартный каталог данных системы:
 
-| Система | Куда |
-| --- | --- |
-| Windows | `%LOCALAPPDATA%\Archivarius` |
-| macOS | `~/Library/Application Support/Archivarius` |
-| Linux | `$XDG_DATA_HOME/Archivarius` или `~/.local/share/Archivarius` |
+| Система | Куда                                                          |
+| ------- | ------------------------------------------------------------- |
+| Windows | `%LOCALAPPDATA%\Archivarius`                                  |
+| macOS   | `~/Library/Application Support/Archivarius`                   |
+| Linux   | `$XDG_DATA_HOME/Archivarius` или `~/.local/share/Archivarius` |
 
 ---
 
@@ -340,11 +340,11 @@ python build.py
 
 Скрипт сам определяет систему и собирает под неё:
 
-| Система | Результат в `dist/`                                          |
-| ------- | ------------------------------------------------------------ |
-| Windows | `Archivarius.exe` + `Archivarius-2.0-windows.zip`             |
-| Linux   | `Archivarius` + `Archivarius-2.0-linux.tar.gz`                |
-| macOS   | `Archivarius.app` + `Archivarius-2.0-macos.zip`               |
+| Система | Результат в `dist/`                               |
+| ------- | ------------------------------------------------- |
+| Windows | `Archivarius.exe` + `Archivarius-2.0-windows.zip` |
+| Linux   | `Archivarius` + `Archivarius-2.0-linux.tar.gz`    |
+| macOS   | `Archivarius.app` + `Archivarius-2.0-macos.zip`   |
 
 Что делает `build.py`:
 
